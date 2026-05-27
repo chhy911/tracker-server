@@ -4,8 +4,11 @@ project(TrackerServer VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Use legacy FindBoost module
+set(CMAKE_POLICY_DEFAULT_CMP0167 OLD)
+
 # Find required packages
-find_package(Boost REQUIRED SYSTEM THREAD)
+find_package(Boost 1.70 REQUIRED COMPONENTS system thread)
 find_package(CURL REQUIRED)
 find_package(MySQL REQUIRED)
 
@@ -27,7 +30,8 @@ add_executable(tracker-server ${TRACKER_SOURCES})
 # Link libraries
 target_link_libraries(tracker-server
     PRIVATE
-    ${Boost_LIBRARIES}
+    Boost::system
+    Boost::thread
     ${CURL_LIBRARIES}
     ${MySQL_LIBRARIES}
     pthread
@@ -46,7 +50,7 @@ target_include_directories(tracker-server
 if(MSVC)
     target_compile_options(tracker-server PRIVATE /W4)
 else()
-    target_compile_options(tracker-server PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(tracker-server PRIVATE -Wall -Wextra -pedantic -fPIC)
 endif()
 
 # Installation
