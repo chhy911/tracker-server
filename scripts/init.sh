@@ -8,7 +8,7 @@ echo "=== BitTorrent Tracker Server Initialization Script ==="
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Check if running on Ubuntu
 if [ ! -f /etc/os-release ]; then
@@ -85,7 +85,7 @@ sudo chmod 755 build/tracker-server
 
 # 8. Install dashboard dependencies
 echo -e "${YELLOW}Step 8: Installing dashboard dependencies...${NC}"
-cd dashboard
+cd dashboard || exit 1
 npm install
 npm run build
 cd ..
@@ -94,6 +94,7 @@ echo -e "${GREEN}Dashboard setup completed${NC}"
 
 # 9. Create systemd service file
 echo -e "${YELLOW}Step 9: Creating systemd service file...${NC}"
+TRACKER_DIR=$(pwd)
 sudo tee /etc/systemd/system/tracker-server.service > /dev/null <<EOF
 [Unit]
 Description=BitTorrent Tracker Server
@@ -103,8 +104,8 @@ Wants=mysql.service
 [Service]
 Type=simple
 User=tracker
-WorkingDirectory=$(pwd)
-ExecStart=$(pwd)/build/tracker-server $(pwd)/config/tracker.conf
+WorkingDirectory=${TRACKER_DIR}
+ExecStart=${TRACKER_DIR}/build/tracker-server ${TRACKER_DIR}/config/tracker.conf
 Restart=on-failure
 RestartSec=10
 
