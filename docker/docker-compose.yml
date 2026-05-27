@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: tracker-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: tracker_db
+      MYSQL_USER: tracker
+      MYSQL_PASSWORD: tracker_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./../../sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - tracker-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 5s
+      retries: 5
+
+  tracker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: tracker-server
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      TRACKER_DB_HOST: mysql
+      TRACKER_DB_PORT: 3306
+      TRACKER_DB_USER: tracker
+      TRACKER_DB_PASSWORD: tracker_password
+      TRACKER_DB_NAME: tracker_db
+    ports:
+      - "6969:6969"
+      - "8080:8080"
+      - "3000:3000"
+    volumes:
+      - ./logs:/opt/tracker-server/logs
+      - ./config:/opt/tracker-server/config
+    networks:
+      - tracker-network
+    restart: unless-stopped
+
+networks:
+  tracker-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
