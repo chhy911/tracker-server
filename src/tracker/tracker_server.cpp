@@ -1,6 +1,5 @@
 #include "tracker_server.hpp"
 #include "../utils/logger.hpp"
-#include <iostream>
 #include <chrono>
 
 TrackerServer::TrackerServer() : port_(6969), worker_threads_(8), max_connections_(300), running_(false) {}
@@ -16,21 +15,21 @@ void TrackerServer::configure(const std::string& host, int port, int worker_thre
     max_connections_ = max_connections;
 }
 
-bool TrackerServer::start() {
+bool TrackerServer::start(DBManager* db_manager) {
+    if (!db_manager) {
+        LOG_ERROR("Database manager is required");
+        return false;
+    }
+
     try {
-        db_manager_ = std::make_unique<DBManager>();
-        if (!db_manager_->connect()) {
-            LOG_ERROR("Failed to connect to database");
-            return false;
-        }
+        db_manager_ = db_manager;
 
         tcp::endpoint endpoint(boost::asio::ip::address::from_string(host_), port_);
         acceptor_ = std::make_unique<tcp::acceptor>(io_context_, endpoint);
-        
+
         LOG_INFO("Tracker server listening on %s:%d", host_.c_str(), port_);
         running_ = true;
-        
-        // Start worker threads
+
         for (int i = 0; i < worker_threads_; ++i) {
             worker_threads_vec_.emplace_back([this]() {
                 io_context_.run();
@@ -47,18 +46,28 @@ bool TrackerServer::start() {
 }
 
 void TrackerServer::run() {
-    // Main thread also runs io_context
     io_context_.run();
 }
 
 void TrackerServer::stop() {
     running_ = false;
     io_context_.stop();
-    
+
     for (auto& t : worker_threads_vec_) {
         if (t.joinable()) {
             t.join();
         }
+    }
+    worker_threads_vec_.clear();
+}
+
+void TrackerServer::record_request() {
+    total_requests_++;
+}
+
+void TrackerServer::release_connection() {
+    if (active_connections_.load() > 0) {
+        active_connections_--;
     }
 }
 
@@ -66,7 +75,7 @@ void TrackerServer::start_accept() {
     if (!running_) return;
 
     TrackerSession::pointer new_session =
-        TrackerSession::create(io_context_, db_manager_.get());
+        TrackerSession::create(io_context_, db_manager_, this);
 
     acceptor_->async_accept(new_session->socket(),
         [this, new_session](const boost::system::error_code& error) {
@@ -91,7 +100,7 @@ void TrackerServer::handle_accept(TrackerSession::pointer new_session,
 
 void TrackerSession::start() {
     socket_.async_read_some(boost::asio::buffer(data_, MAX_LENGTH),
-        [this](const boost::system::error_code& error, size_t bytes_transferred) {
+        [this, self = shared_from_this()](const boost::system::error_code& error, size_t bytes_transferred) {
             handle_read(error, bytes_transferred);
         });
 }
@@ -99,25 +108,43 @@ void TrackerSession::start() {
 void TrackerSession::handle_read(const boost::system::error_code& error, size_t bytes_transferred) {
     if (!error) {
         try {
-            // Parse BEP request
             std::string request(data_, bytes_transferred);
             std::string response = bep_handler_.handle_request(request, db_manager_);
 
+            if (server_) {
+                server_->record_request();
+            }
+
             boost::asio::async_write(socket_, boost::asio::buffer(response),
-                [this](const boost::system::error_code& error) {
-                    handle_write(error);
+                [this, self = shared_from_this()](const boost::system::error_code& write_error) {
+                    handle_write(write_error);
                 });
         } catch (const std::exception& e) {
             LOG_ERROR("Error handling request: %s", e.what());
+            close_session();
         }
     } else {
         LOG_DEBUG("Read error: %s", error.message().c_str());
+        close_session();
     }
 }
 
 void TrackerSession::handle_write(const boost::system::error_code& error) {
     if (error) {
         LOG_DEBUG("Write error: %s", error.message().c_str());
+    }
+    close_session();
+}
+
+void TrackerSession::close_session() {
+    if (connection_released_) return;
+    connection_released_ = true;
+
+    boost::system::error_code ec;
+    socket_.close(ec);
+
+    if (server_) {
+        server_->release_connection();
     }
 }
 
@@ -135,7 +162,7 @@ double TrackerServer::get_requests_per_second() const {
 
     auto now = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_time).count();
-    
+
     if (duration > 0) {
         double rps = static_cast<double>(total_requests_.load() - last_requests) / duration;
         last_time = now;

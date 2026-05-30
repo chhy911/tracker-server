@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Build dashboard
+        working-directory: dashboard
+        run: |
+          npm install
+          npm run build
+
+  build-tracker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake \
+            libboost-all-dev libcurl4-openssl-dev libmysqlclient-dev
+      - name: Build dashboard (for static path in tests)
+        working-directory: dashboard
+        run: |
+          npm install
+          npm run build
+      - name: Configure and compile
+        run: |
+          mkdir build
+          cd build
+          cmake ..
+          make -j$(nproc)
+      - name: Verify binary
+        run: test -f build/tracker-server

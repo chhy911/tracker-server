@@ -34,6 +34,10 @@ public:
     DBManager();
     ~DBManager();
 
+    void configure(const std::string& host, int port, const std::string& user,
+                   const std::string& password, const std::string& database,
+                   int pool_size = DEFAULT_POOL_SIZE);
+
     bool connect();
     void disconnect();
     
@@ -58,7 +62,13 @@ public:
 
 private:
     std::unique_ptr<ConnectionPool> connection_pool_;
-    
+    std::string host_;
+    int port_;
+    std::string user_;
+    std::string password_;
+    std::string database_;
+    int pool_size_;
+
     static const int DEFAULT_POOL_SIZE = 50;
 };
 

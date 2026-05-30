@@ -3,8 +3,26 @@
 #include "../utils/logger.hpp"
 #include <sstream>
 
-DBManager::DBManager() {
-    connection_pool_ = std::make_unique<ConnectionPool>(DEFAULT_POOL_SIZE);
+DBManager::DBManager()
+    : host_("localhost"),
+      port_(3306),
+      user_("tracker"),
+      password_("tracker_password"),
+      database_("tracker_db"),
+      pool_size_(DEFAULT_POOL_SIZE) {
+    connection_pool_ = std::make_unique<ConnectionPool>(pool_size_);
+}
+
+void DBManager::configure(const std::string& host, int port, const std::string& user,
+                          const std::string& password, const std::string& database,
+                          int pool_size) {
+    host_ = host;
+    port_ = port;
+    user_ = user;
+    password_ = password;
+    database_ = database;
+    pool_size_ = pool_size;
+    connection_pool_ = std::make_unique<ConnectionPool>(pool_size_);
 }
 
 DBManager::~DBManager() {
@@ -12,9 +30,7 @@ DBManager::~DBManager() {
 }
 
 bool DBManager::connect() {
-    // Configuration should be loaded from config file
-    // For now using default values
-    if (!connection_pool_->initialize("localhost", 3306, "tracker", "tracker_password", "tracker_db")) {
+    if (!connection_pool_->initialize(host_, port_, user_, password_, database_)) {
         LOG_ERROR("Failed to initialize connection pool");
         return false;
     }

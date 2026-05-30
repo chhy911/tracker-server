@@ -17,7 +17,8 @@ logs/
 
 # Dependencies
 node_modules/
-package-lock.json
+dashboard/node_modules/
+dashboard/dist/
 
 # Binary files
 *.o

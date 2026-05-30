@@ -1,112 +1,105 @@
 # BitTorrent Tracker Server
 
-一个高性能的 BitTorrent Tracker 服务器，使用 C++17 和 MySQL 构建。支持200+并发连接，具有可视化仪表板和完整的监控功能。
+[![CI](https://github.com/chhy911/tracker-server/actions/workflows/ci.yml/badge.svg)](https://github.com/chhy911/tracker-server/actions/workflows/ci.yml)
+
+高性能 BitTorrent Tracker 服务，C++17 + Boost.Asio + MySQL，内置 REST API 与 React 监控仪表板。
 
 ## 功能特性
 
-- 🚀 **高性能**：基于 Asio 异步网络库，支持200+并发连接
-- 📊 **可视化仪表板**：React 前端，实时性能监控
-- 🗄️ **持久化存储**：MySQL 数据库，支持种子和peer信息管理
-- 🔧 **完整的BEP协议支持**：标准BitTorrent tracker协议
-- 📈 **监控告警**：性能指标、连接统计、错误日志
-- 🐳 **Docker 部署**：一键部署到 Ubuntu 26.04
-- 🔐 **线程安全**：线程池、连接池、数据库连接池
+- **异步网络**：Boost.Asio，可配置 worker 线程与最大连接数
+- **BEP Announce**：标准 HTTP announce 协议处理
+- **MySQL 持久化**：种子与 peer 信息、连接池
+- **REST API**（8080）：统计、健康检查、peer 查询
+- **Web 仪表板**（3000）：实时连接数、QPS、做种/下载统计
+- **Docker 一键部署**：MySQL + Tracker 编排
 
 ## 项目结构
 
 ```
 tracker-server/
 ├── src/
-│   ├── main.cpp                 # 主程序入口
-│   ├── tracker/
-│   │   ├── tracker_server.cpp   # Tracker核心逻辑
-│   │   ├── tracker_server.hpp
-│   │   ├── bep_handler.cpp      # BEP协议处理
-│   │   └── bep_handler.hpp
-│   ├── database/
-│   │   ├── db_manager.cpp       # 数据库管理
-│   │   ├── db_manager.hpp
-│   │   ├── connection_pool.cpp  # 连接池
-│   │   └── connection_pool.hpp
-│   ├── api/
-│   │   ├── rest_api.cpp         # RESTful API接口
-│   │   └── rest_api.hpp
-│   └── utils/
-│       ├── logger.cpp           # 日志系统
-│       ├── logger.hpp
-│       ├── config.cpp           # 配置管理
-│       └── config.hpp
-├── dashboard/                   # React前端仪表板
-│   ├── src/
-│   ├── public/
-│   └── package.json
-├── sql/
-│   └── init.sql                 # 数据库初始化脚本
+│   ├── main.cpp
+│   ├── tracker/          # Tracker 核心与 BEP
+│   ├── database/         # MySQL 与连接池
+│   ├── api/              # REST + HTTP 服务
+│   └── utils/            # 配置与日志
+├── dashboard/            # React (Vite) 仪表板
+├── sql/init.sql
+├── config/tracker.conf
 ├── docker/
 │   ├── Dockerfile
 │   ├── docker-compose.yml
-│   └── scripts/
-├── cmake/
-│   └── CMakeLists.txt           # CMake构建配置
-├── config/
-│   └── tracker.conf             # 配置文件
-└── README.md
+│   └── supervisor.conf
+├── CMakeLists.txt
+└── scripts/init.sh
 ```
 
 ## 系统要求
 
-- Ubuntu 26.04 LTS
-- C++17 编译器（GCC 9+ 或 Clang 8+）
-- CMake 3.15+
-- MySQL 8.0+
-- Node.js 18+ （仅用于前端仪表板）
+- Linux（推荐 Ubuntu 22.04+）或 Docker
+- C++17、CMake 3.15+
+- Boost、libcurl、MySQL client
+- Node.js 18+（仅构建 dashboard）
 
 ## 快速开始
 
-### 方式1：Docker 部署（推荐）
+### Docker（推荐）
 
 ```bash
-# 克隆仓库
 git clone https://github.com/chhy911/tracker-server.git
-cd tracker-server
+cd tracker-server/docker
 
-# 构建并运行
-docker-compose up -d
+# 可选：复制环境变量
+cp ../.env.example ../.env
 
-# 访问仪表板
-# http://localhost:3000
+docker compose up -d --build
 ```
 
-### 方式2：本地构建
+访问：
+
+| 服务 | 地址 |
+|------|------|
+| 仪表板 | http://localhost:3000 |
+| REST API | http://localhost:8080 |
+| Tracker | `0.0.0.0:6969` |
+
+数据库主机由环境变量 `TRACKER_DB_HOST` 注入（Compose 默认为 `mysql`）。
+
+### 本地构建
 
 ```bash
-# 安装依赖
+# 依赖 (Ubuntu)
 sudo apt update
-sudo apt install -y build-essential cmake git mysql-server mysql-client
+sudo apt install -y build-essential cmake libboost-all-dev \
+  libcurl4-openssl-dev libmysqlclient-dev mysql-server
 
-# 安装C++依赖
-sudo apt install -y libboost-all-dev libcurl4-openssl-dev
+# 数据库
+mysql -u root -p < sql/init.sql
 
-# 克隆仓库
-git clone https://github.com/chhy911/tracker-server.git
-cd tracker-server
+# 前端
+cd dashboard && npm install && npm run build && cd ..
 
-# 构建
-mkdir build && cd build
+# 后端
+mkdir -p build && cd build
 cmake ..
 make -j$(nproc)
-
-# 运行初始化脚本
 cd ..
-bash scripts/init.sh
 
-# 启动服务
-./build/tracker-server
+mkdir -p logs
+./build/tracker-server config/tracker.conf
 ```
+
+开发时前端热更新：
+
+```bash
+cd dashboard && npm run dev
+```
+
+`vite` 会将 `/api` 代理到 `http://localhost:8080`。
 
 ## 配置
 
-编辑 `config/tracker.conf`：
+`config/tracker.conf` 主要段落：
 
 ```ini
 [server]
@@ -119,67 +112,54 @@ max_connections=300
 host=localhost
 port=3306
 user=tracker
-password=your_password
+password=tracker_password
 database=tracker_db
 pool_size=50
 
 [api]
-port=8080
 host=0.0.0.0
+port=8080
 
-[logging]
-level=info
-file=logs/tracker.log
-max_size=100M
+[dashboard]
+host=0.0.0.0
+port=3000
+static_path=dashboard/dist
 ```
 
-## API 文档
+环境变量覆盖数据库连接（Docker 部署时使用）：
 
-### 获取统计信息
+- `TRACKER_DB_HOST`
+- `TRACKER_DB_PORT`
+- `TRACKER_DB_USER`
+- `TRACKER_DB_PASSWORD`
+- `TRACKER_DB_NAME`
 
-```bash
-GET /api/stats
-```
+## API
 
-### 获取peer列表
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/health` | 健康检查 |
+| GET | `/api/stats` | 全局做种/下载统计 |
+| GET | `/api/metrics` | 活跃连接、总请求、QPS |
+| GET | `/api/torrent/:info_hash` | 单个种子统计 |
+| GET | `/api/peers/:info_hash?limit=50` | Peer 列表 |
 
-```bash
-GET /api/torrent/:info_hash/peers
-```
+Tracker announce（6969）：
 
-### 获取tracker公告
-
-```bash
+```http
 GET /announce?info_hash=...&peer_id=...&port=...&uploaded=...&downloaded=...&left=...
 ```
 
-## 性能指标
+## 推送到 GitHub
 
-- **并发连接**：200+ 稳定
-- **内存占用**：~500MB（满载）
-- **CPU占用**：<30%（8核）
-- **响应时间**：<50ms（P99）
-- **吞吐量**：50k+ requests/sec
+```bash
+git checkout -b feature/my-change
+git add .
+git commit -m "描述你的改动"
+git push -u origin feature/my-change
+```
 
-## 监控告警
-
-访问仪表板查看：
-- 实时连接数
-- 请求QPS
-- 数据库连接池状态
-- 系统资源使用
-- 错误日志实时查看
-
-## 常见问题
-
-**Q: 如何添加更多worker线程？**
-A: 修改配置文件中的 `worker_threads` 参数，建议设为CPU核数。
-
-**Q: 数据库连接超时怎么办？**
-A: 检查MySQL服务是否运行，增加 `pool_size` 大小，检查网络连接。
-
-**Q: 如何查看详细日志？**
-A: 日志文件位于 `logs/tracker.log`，修改配置中的 `logging.level` 为 `debug`。
+在 GitHub 上创建 Pull Request；CI 会自动编译 C++ 与构建 dashboard。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 许可证
 
@@ -187,4 +167,4 @@ MIT
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request！
+欢迎 Issue 与 Pull Request。

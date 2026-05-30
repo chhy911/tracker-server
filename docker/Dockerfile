@@ -1,55 +1,59 @@
-FROM ubuntu:26.04
+# Stage 1: Build React dashboard
+FROM node:20-alpine AS dashboard-build
+WORKDIR /build
+COPY dashboard/package.json ./
+RUN npm install
+COPY dashboard/ ./
+ENV VITE_API_URL=http://localhost:8080
+RUN npm run build
 
-# Set environment variables
+# Stage 2: Build tracker server
+FROM ubuntu:22.04 AS builder
+
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TRACKER_HOME=/opt/tracker-server
 
-# Install dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
-    curl \
-    wget \
     libboost-all-dev \
     libcurl4-openssl-dev \
     libmysqlclient-dev \
-    mysql-client \
-    nodejs \
-    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+COPY --from=dashboard-build /build/dist ./dashboard/dist
+
+RUN mkdir build && cd build \
+    && cmake .. \
+    && make -j$(nproc)
+
+# Stage 3: Runtime
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TRACKER_HOME=/opt/tracker-server
+
+RUN apt-get update && apt-get install -y \
+    libboost-system1.74.0 \
+    libboost-thread1.74.0 \
+    libcurl4 \
+    libmysqlclient21 \
     supervisor \
     && rm -rf /var/lib/apt/lists/*
 
-# Create tracker directory
 WORKDIR ${TRACKER_HOME}
 
-# Copy source code
-COPY . .
-
-# Build tracker server
-RUN mkdir build && \
-    cd build && \
-    cmake .. && \
-    make -j$(nproc) && \
-    cd ..
-
-# Install dashboard dependencies
-WORKDIR ${TRACKER_HOME}/dashboard
-RUN npm install
-
-# Build dashboard
-RUN npm run build
-
-# Create logs directory
-RUN mkdir -p ${TRACKER_HOME}/logs
-
-# Create supervisor configuration
-RUN mkdir -p /etc/supervisor/conf.d
-
+COPY --from=builder /src/build/tracker-server ./build/tracker-server
+COPY --from=builder /src/dashboard/dist ./dashboard/dist
+COPY config/tracker.conf ./config/tracker.conf
+COPY sql/ ./sql/
 COPY docker/supervisor.conf /etc/supervisor/conf.d/tracker.conf
 
-# Expose ports
+RUN mkdir -p logs \
+    && sed -i 's|static_path=dashboard/dist|static_path=/opt/tracker-server/dashboard/dist|' config/tracker.conf
+
 EXPOSE 6969 8080 3000
 
-# Start services
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

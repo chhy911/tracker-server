@@ -5,15 +5,15 @@ services:
     image: mysql:8.0
     container_name: tracker-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: tracker_db
-      MYSQL_USER: tracker
-      MYSQL_PASSWORD: tracker_password
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tracker_db}
+      MYSQL_USER: ${MYSQL_USER:-tracker}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-tracker_password}
     ports:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./../../sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - tracker-network
     healthcheck:
@@ -32,16 +32,15 @@ services:
     environment:
       TRACKER_DB_HOST: mysql
       TRACKER_DB_PORT: 3306
-      TRACKER_DB_USER: tracker
-      TRACKER_DB_PASSWORD: tracker_password
-      TRACKER_DB_NAME: tracker_db
+      TRACKER_DB_USER: ${MYSQL_USER:-tracker}
+      TRACKER_DB_PASSWORD: ${MYSQL_PASSWORD:-tracker_password}
+      TRACKER_DB_NAME: ${MYSQL_DATABASE:-tracker_db}
     ports:
       - "6969:6969"
       - "8080:8080"
       - "3000:3000"
     volumes:
-      - ./logs:/opt/tracker-server/logs
-      - ./config:/opt/tracker-server/config
+      - ../logs:/opt/tracker-server/logs
     networks:
       - tracker-network
     restart: unless-stopped

@@ -20,6 +20,7 @@ set(TRACKER_SOURCES
     src/database/db_manager.cpp
     src/database/connection_pool.cpp
     src/api/rest_api.cpp
+    src/api/http_server.cpp
     src/utils/logger.cpp
     src/utils/config.cpp
 )

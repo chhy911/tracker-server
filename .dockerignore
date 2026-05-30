@@ -1,0 +1,12 @@
+build/
+.git/
+.gitignore
+logs/
+node_modules/
+dashboard/node_modules/
+.vscode/
+.idea/
+*.md
+!README.md
+.env
+.env.local
