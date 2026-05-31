@@ -101,7 +101,12 @@ std::shared_ptr<DBConnection> ConnectionPool::get_connection() {
         }
     }
 
-    return conn;
+    // Return a shared_ptr with a custom deleter that returns the connection to the pool.
+    // We capture 'conn' by value to keep the original shared_ptr alive until the deleter runs.
+    // We capture 'this' as a raw pointer, assuming the pool outlives the connections.
+    return std::shared_ptr<DBConnection>(conn.get(), [this, conn](DBConnection*) {
+        this->return_connection(conn);
+    });
 }
 
 void ConnectionPool::return_connection(std::shared_ptr<DBConnection> conn) {

@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 #include <atomic>
+#include <boost/asio/thread_pool.hpp>
 #include "bep_handler.hpp"
 #include "../database/db_manager.hpp"
 
@@ -57,6 +58,7 @@ public:
     void stop();
 
     boost::asio::io_context& io_context() { return io_context_; }
+    boost::asio::thread_pool& task_pool() { return *task_pool_; }
 
     void record_request();
     void release_connection();
@@ -81,6 +83,12 @@ private:
     std::vector<std::thread> worker_threads_vec_;
     std::atomic<int> active_connections_{0};
     std::atomic<long long> total_requests_{0};
+
+    mutable std::mutex rps_mutex_;
+    std::chrono::steady_clock::time_point last_rps_time_{std::chrono::steady_clock::now()};
+    long long last_rps_requests_{0};
+
+    std::unique_ptr<boost::asio::thread_pool> task_pool_;
 
     bool running_;
 };

@@ -1,10 +1,17 @@
 #include "rest_api.hpp"
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
 
 RESTApi::RESTApi(DBManager* db) : db_manager_(db) {}
 
 RESTApi::~RESTApi() {}
+
+namespace {
+    bool starts_with(const std::string& str, const std::string& prefix) {
+        return str.size() >= prefix.size() && std::equal(prefix.begin(), prefix.end(), str.begin());
+    }
+}
 
 std::string RESTApi::handle_request(const std::string& method, const std::string& path, const std::string& body) {
     if (method != "GET") {
@@ -16,21 +23,30 @@ std::string RESTApi::handle_request(const std::string& method, const std::string
     std::string endpoint = path.substr(0, query_pos != std::string::npos ? query_pos : path.length());
     std::string query = query_pos != std::string::npos ? path.substr(query_pos + 1) : "";
 
-    if (endpoint == "/api/stats") {
-        return get_stats();
-    } else if (endpoint == "/api/health") {
-        return get_health();
-    } else if (endpoint.substr(0, 21) == "/api/torrent/") {
-        std::string info_hash = endpoint.substr(21);
-        return get_torrent_stats(info_hash);
-    } else if (endpoint.substr(0, 16) == "/api/peers/") {
-        std::string info_hash = endpoint.substr(16);
-        auto params = parse_query_string(query);
-        int limit = 50;
-        if (params.find("limit") != params.end()) {
-            limit = std::stoi(params["limit"]);
+    try {
+        if (endpoint == "/api/stats") {
+            return get_stats();
+        } else if (endpoint == "/api/health") {
+            return get_health();
+        } else if (starts_with(endpoint, "/api/torrent/")) {
+            std::string info_hash = endpoint.substr(13); // "/api/torrent/" is 13 chars
+            return get_torrent_stats(info_hash);
+        } else if (starts_with(endpoint, "/api/peers/")) {
+            std::string info_hash = endpoint.substr(11); // "/api/peers/" is 11 chars
+            auto params = parse_query_string(query);
+            int limit = 50;
+            if (params.find("limit") != params.end()) {
+                try {
+                    limit = std::stoi(params["limit"]);
+                } catch (const std::exception& e) {
+                    // If limit is invalid, fallback to default or return error
+                    limit = 50;
+                }
+            }
+            return get_peers_list(info_hash, limit);
         }
-        return get_peers_list(info_hash, limit);
+    } catch (const std::exception& e) {
+        return "{\"error\": \"Internal server error: " + json_escape(e.what()) + "\"}";
     }
 
     return "{\"error\": \"Not found\"}";

@@ -2,7 +2,7 @@
 #include "../utils/logger.hpp"
 #include <chrono>
 
-TrackerServer::TrackerServer() : port_(6969), worker_threads_(8), max_connections_(300), running_(false) {}
+TrackerServer::TrackerServer() : port_(6969), worker_threads_(8), max_connections_(300), running_(false), task_pool_(nullptr) {}
 
 TrackerServer::~TrackerServer() {
     stop();
@@ -13,6 +13,7 @@ void TrackerServer::configure(const std::string& host, int port, int worker_thre
     port_ = port;
     worker_threads_ = worker_threads;
     max_connections_ = max_connections;
+    task_pool_ = std::make_unique<boost::asio::thread_pool>(worker_threads);
 }
 
 bool TrackerServer::start(DBManager* db_manager) {
@@ -52,6 +53,10 @@ void TrackerServer::run() {
 void TrackerServer::stop() {
     running_ = false;
     io_context_.stop();
+
+    if (task_pool_) {
+        task_pool_->join();
+    }
 
     for (auto& t : worker_threads_vec_) {
         if (t.joinable()) {
@@ -109,18 +114,34 @@ void TrackerSession::handle_read(const boost::system::error_code& error, size_t 
     if (!error) {
         try {
             std::string request(data_, bytes_transferred);
-            std::string response = bep_handler_.handle_request(request, db_manager_);
-
+            
             if (server_) {
-                server_->record_request();
-            }
+                // Offload heavy work to the task pool
+                boost::asio::post(server_->task_pool(), [this, self = shared_from_this(), request]() {
+                    try {
+                        std::string response = bep_handler_.handle_request(request, db_manager_);
 
-            boost::asio::async_write(socket_, boost::asio::buffer(response),
-                [this, self = shared_from_this()](const boost::system::error_code& write_error) {
-                    handle_write(write_error);
+                        if (server_) {
+                            server_->record_request();
+                        }
+
+                        // Write the response back on the I/O context (network threads)
+                        boost::asio::post(server_->io_context(), [this, self, response]() {
+                            boost::asio::async_write(socket_, boost::asio::buffer(response),
+                                [this, self](const boost::system::error_code& write_error) {
+                                    handle_write(write_error);
+                                });
+                        });
+                    } catch (const std::exception& e) {
+                        LOG_ERROR("Error handling request in task pool: %s", e.what());
+                        boost::asio::post(server_->io_context(), [this, self]() {
+                            close_session();
+                        });
+                    }
                 });
+            }
         } catch (const std::exception& e) {
-            LOG_ERROR("Error handling request: %s", e.what());
+            LOG_ERROR("Error preparing request: %s", e.what());
             close_session();
         }
     } else {
@@ -157,16 +178,14 @@ long long TrackerServer::get_total_requests() const {
 }
 
 double TrackerServer::get_requests_per_second() const {
-    static auto last_time = std::chrono::steady_clock::now();
-    static long long last_requests = 0;
-
+    std::lock_guard<std::mutex> lock(rps_mutex_);
     auto now = std::chrono::steady_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_time).count();
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_rps_time_).count();
 
     if (duration > 0) {
-        double rps = static_cast<double>(total_requests_.load() - last_requests) / duration;
-        last_time = now;
-        last_requests = total_requests_.load();
+        double rps = static_cast<double>(total_requests_.load() - last_rps_requests_) / duration;
+        last_rps_time_ = now;
+        last_rps_requests_ = total_requests_.load();
         return rps;
     }
     return 0.0;
