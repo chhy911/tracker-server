@@ -16,6 +16,7 @@ public:
 
     // API endpoints
     std::string get_stats();
+    std::string get_torrents();
     std::string get_torrent_stats(const std::string& info_hash);
     std::string get_peers_list(const std::string& info_hash, int limit = 50);
     std::string get_health();

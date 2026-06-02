@@ -116,6 +116,8 @@ int main(int argc, char* argv[]) {
             LOG_WARN("Dashboard static server failed (build dashboard first)");
         }
 
+        g_server->start_workers();
+
         LOG_INFO("Tracker server started successfully");
         LOG_INFO("Worker threads: %d", worker_threads);
         LOG_INFO("Max connections: %d", max_connections);

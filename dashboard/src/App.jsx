@@ -1,17 +1,32 @@
 import { useCallback, useEffect, useState } from 'react';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 async function fetchJson(path) {
-  const res = await fetch(`${API_BASE}${path}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  const url = `${API_BASE}${path}`;
+  const res = await fetch(url);
+  const text = await res.text();
+  const ct = res.headers.get('content-type') || '';
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} ${url}`);
+  }
+  if (!ct.includes('json') && text.trimStart().startsWith('<')) {
+    throw new Error(
+      'API 返回了网页而非 JSON。请用 http://服务器IP:8888 打开（不要只用 :3000）'
+    );
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`无效 JSON: ${text.slice(0, 80)}`);
+  }
 }
 
 export default function App() {
   const [stats, setStats] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [health, setHealth] = useState(null);
+  const [torrents, setTorrents] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -19,14 +34,16 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const [s, m, h] = await Promise.all([
+      const [s, m, h, t] = await Promise.all([
         fetchJson('/api/stats'),
         fetchJson('/api/metrics'),
         fetchJson('/api/health'),
+        fetchJson('/api/torrents'),
       ]);
       setStats(s);
       setMetrics(m);
       setHealth(h);
+      setTorrents(t.torrents || []);
     } catch (e) {
       setError(e.message || '无法连接 API');
     } finally {
@@ -53,25 +70,54 @@ export default function App() {
       {error && (
         <div className="banner error">
           <strong>API 错误：</strong> {error}
-          <span className="hint">请确认 tracker-server 已在 8080 端口启动</span>
+          <span className="hint">请使用 http://服务器IP:8888 打开</span>
         </div>
       )}
 
       <section className="grid">
         <Card title="服务状态" value={health?.status === 'ok' ? '正常' : '未知'} accent="green" />
-        <Card title="活跃连接" value={metrics?.active_connections ?? '—'} />
+        <Card title="种子数量" value={stats?.torrent_count ?? '—'} />
+        <Card title="活跃 Peer" value={stats?.peer_count ?? '—'} />
         <Card title="总请求数" value={metrics?.total_requests ?? '—'} />
-        <Card title="QPS" value={metrics?.requests_per_second?.toFixed?.(2) ?? metrics?.requests_per_second ?? '—'} />
       </section>
 
       <section className="grid">
-        <Card title="做种 (complete)" value={stats?.complete ?? '—'} />
-        <Card title="下载中 (incomplete)" value={stats?.incomplete ?? '—'} />
-        <Card title="已完成下载" value={stats?.downloaded ?? '—'} />
+        <Card title="做种 (2h内)" value={stats?.active_seeders ?? stats?.complete ?? '—'} />
+        <Card title="下载中 (2h内)" value={stats?.active_leechers ?? stats?.incomplete ?? '—'} />
+        <Card title="QPS" value={metrics?.requests_per_second?.toFixed?.(2) ?? metrics?.requests_per_second ?? '—'} />
+        <Card title="连接数" value={metrics?.active_connections ?? '—'} />
+      </section>
+
+      <section className="torrent-list">
+        <h2>种子列表</h2>
+        {torrents.length === 0 ? (
+          <p className="empty">暂无种子记录。请确认 qBittorrent 已添加 Tracker：<code>http://IP:6969/announce</code></p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Info Hash</th>
+                <th>做种</th>
+                <th>下载</th>
+                <th>完成次数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {torrents.map((t) => (
+                <tr key={t.info_hash}>
+                  <td className="hash" title={t.info_hash}>{t.info_hash.slice(0, 16)}…</td>
+                  <td>{t.complete}</td>
+                  <td>{t.incomplete}</td>
+                  <td>{t.downloaded}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <footer>
-        <p>API: {API_BASE} · 每 5 秒自动刷新</p>
+        <p>统计为近 2 小时活跃 Peer · 每 5 秒刷新</p>
       </footer>
     </div>
   );

@@ -116,3 +116,45 @@ footer {
 footer p {
   margin: 0;
 }
+
+.torrent-list {
+  margin-top: 2rem;
+}
+
+.torrent-list h2 {
+  font-size: 1.1rem;
+  margin: 0 0 1rem;
+  color: var(--muted);
+}
+
+.torrent-list table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.torrent-list th,
+.torrent-list td {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.torrent-list th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.torrent-list .hash {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.empty code {
+  color: var(--accent);
+}

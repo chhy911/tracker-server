@@ -21,14 +21,14 @@ public:
         }
         
         try {
-            if (std::is_same<T, std::string>::value) {
-                return (T)it->second;
-            } else if (std::is_same<T, int>::value) {
-                return (T)std::stoi(it->second);
-            } else if (std::is_same<T, double>::value) {
-                return (T)std::stod(it->second);
-            } else if (std::is_same<T, bool>::value) {
-                return (T)(it->second == "true" || it->second == "1");
+            if constexpr (std::is_same_v<T, std::string>) {
+                return it->second;
+            } else if constexpr (std::is_same_v<T, int>) {
+                return std::stoi(it->second);
+            } else if constexpr (std::is_same_v<T, double>) {
+                return std::stod(it->second);
+            } else if constexpr (std::is_same_v<T, bool>) {
+                return (it->second == "true" || it->second == "1");
             }
         } catch (...) {
             return default_value;

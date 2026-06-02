@@ -58,8 +58,8 @@ bool DBManager::create_tables() {
         return false;
     }
 
-    const char* sql = R"(
-        CREATE TABLE IF NOT EXISTS torrents (
+    const char* statements[] = {
+        R"(CREATE TABLE IF NOT EXISTS torrents (
             id INT AUTO_INCREMENT PRIMARY KEY,
             info_hash VARCHAR(40) UNIQUE NOT NULL,
             name VARCHAR(255),
@@ -69,9 +69,8 @@ bool DBManager::create_tables() {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_hash (info_hash)
-        );
-
-        CREATE TABLE IF NOT EXISTS peers (
+        ))",
+        R"(CREATE TABLE IF NOT EXISTS peers (
             id INT AUTO_INCREMENT PRIMARY KEY,
             peer_id VARCHAR(40) NOT NULL,
             torrent_id INT NOT NULL,
@@ -87,22 +86,23 @@ bool DBManager::create_tables() {
             INDEX idx_peer_id (peer_id),
             INDEX idx_hash (info_hash),
             INDEX idx_last_seen (last_seen)
-        );
-
-        CREATE TABLE IF NOT EXISTS statistics (
+        ))",
+        R"(CREATE TABLE IF NOT EXISTS statistics (
             id INT AUTO_INCREMENT PRIMARY KEY,
             total_requests BIGINT DEFAULT 0,
             total_bytes_uploaded BIGINT DEFAULT 0,
             total_bytes_downloaded BIGINT DEFAULT 0,
             active_peers INT DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        );
-    )";
+        ))",
+    };
 
-    if (mysql_query(conn->get_mysql(), sql) != 0) {
-        LOG_ERROR("Failed to create tables: %s", mysql_error(conn->get_mysql()));
-        connection_pool_->return_connection(conn);
-        return false;
+    for (const char* sql : statements) {
+        if (mysql_query(conn->get_mysql(), sql) != 0) {
+            LOG_ERROR("Failed to create tables: %s", mysql_error(conn->get_mysql()));
+            connection_pool_->return_connection(conn);
+            return false;
+        }
     }
 
     connection_pool_->return_connection(conn);
@@ -110,27 +110,74 @@ bool DBManager::create_tables() {
 }
 
 bool DBManager::update_peer(const PeerInfo& peer) {
+    if (peer.info_hash.empty() || peer.peer_id.empty() || peer.ip.empty() || peer.port <= 0) {
+        LOG_ERROR("Invalid peer data for update");
+        return false;
+    }
+
     auto conn = connection_pool_->get_connection();
     if (!conn) return false;
 
-    try {
-        std::ostringstream query;
-        query << "INSERT INTO peers (peer_id, info_hash, ip, port, uploaded, downloaded, left_to_download, event) "
-              << "VALUES ('" << peer.peer_id << "', '" << peer.peer_id.substr(0, 40) << "', '" 
-              << peer.ip << "', " << peer.port << ", " << peer.uploaded << ", " 
-              << peer.downloaded << ", " << peer.left << ", '" << peer.event << "') "
-              << "ON DUPLICATE KEY UPDATE "
-              << "uploaded=" << peer.uploaded << ", "
-              << "downloaded=" << peer.downloaded << ", "
-              << "left_to_download=" << peer.left << ", "
-              << "last_seen=NOW()";
+    auto esc = [](const std::string& s) {
+        std::string out;
+        for (char c : s) {
+            if (c == '\'') out += "\\'";
+            else if (c == '\\') out += "\\\\";
+            else out += c;
+        }
+        return out;
+    };
 
-        if (mysql_query(conn->get_mysql(), query.str().c_str()) != 0) {
+    try {
+        std::ostringstream torrent_sql;
+        torrent_sql << "INSERT INTO torrents (info_hash) VALUES ('" << peer.info_hash << "') "
+                    << "ON DUPLICATE KEY UPDATE updated_at=NOW()";
+        if (mysql_query(conn->get_mysql(), torrent_sql.str().c_str()) != 0) {
+            LOG_ERROR("Failed to upsert torrent: %s", mysql_error(conn->get_mysql()));
+            connection_pool_->return_connection(conn);
+            return false;
+        }
+
+        std::ostringstream id_sql;
+        id_sql << "SELECT id FROM torrents WHERE info_hash='" << peer.info_hash << "' LIMIT 1";
+        if (mysql_query(conn->get_mysql(), id_sql.str().c_str()) != 0) {
+            LOG_ERROR("Failed to lookup torrent: %s", mysql_error(conn->get_mysql()));
+            connection_pool_->return_connection(conn);
+            return false;
+        }
+
+        MYSQL_RES* id_res = mysql_store_result(conn->get_mysql());
+        if (!id_res) {
+            connection_pool_->return_connection(conn);
+            return false;
+        }
+        MYSQL_ROW id_row = mysql_fetch_row(id_res);
+        if (!id_row || !id_row[0]) {
+            mysql_free_result(id_res);
+            connection_pool_->return_connection(conn);
+            return false;
+        }
+        int torrent_id = std::stoi(id_row[0]);
+        mysql_free_result(id_res);
+
+        std::ostringstream peer_sql;
+        peer_sql << "INSERT INTO peers (peer_id, torrent_id, info_hash, ip, port, uploaded, downloaded, "
+                 << "left_to_download, event) VALUES ('"
+                 << esc(peer.peer_id) << "', " << torrent_id << ", '" << peer.info_hash << "', '"
+                 << esc(peer.ip) << "', " << peer.port << ", " << peer.uploaded << ", "
+                 << peer.downloaded << ", " << peer.left << ", '" << esc(peer.event) << "') "
+                 << "ON DUPLICATE KEY UPDATE ip='" << esc(peer.ip) << "', port=" << peer.port
+                 << ", uploaded=" << peer.uploaded << ", downloaded=" << peer.downloaded
+                 << ", left_to_download=" << peer.left << ", event='" << esc(peer.event)
+                 << "', last_seen=NOW()";
+
+        if (mysql_query(conn->get_mysql(), peer_sql.str().c_str()) != 0) {
             LOG_ERROR("Failed to update peer: %s", mysql_error(conn->get_mysql()));
             connection_pool_->return_connection(conn);
             return false;
         }
 
+        refresh_torrent_stats(peer.info_hash);
         connection_pool_->return_connection(conn);
         return true;
 
@@ -141,14 +188,17 @@ bool DBManager::update_peer(const PeerInfo& peer) {
     }
 }
 
-std::vector<PeerInfo> DBManager::get_peers(const std::string& exclude_peer_id, int limit) {
+std::vector<PeerInfo> DBManager::get_peers(const std::string& info_hash,
+                                           const std::string& exclude_peer_id,
+                                           int limit) {
     std::vector<PeerInfo> peers;
     auto conn = connection_pool_->get_connection();
     if (!conn) return peers;
 
     try {
         std::ostringstream query;
-        query << "SELECT peer_id, ip, port FROM peers WHERE peer_id != '" << exclude_peer_id 
+        query << "SELECT peer_id, ip, port FROM peers WHERE info_hash='" << info_hash
+              << "' AND peer_id != '" << exclude_peer_id
               << "' ORDER BY last_seen DESC LIMIT " << limit;
 
         if (mysql_query(conn->get_mysql(), query.str().c_str()) != 0) {
@@ -183,48 +233,151 @@ std::vector<PeerInfo> DBManager::get_peers(const std::string& exclude_peer_id, i
     return peers;
 }
 
-int DBManager::get_complete_count() {
+bool DBManager::remove_peer(const std::string& peer_id, const std::string& info_hash) {
+    auto conn = connection_pool_->get_connection();
+    if (!conn) return false;
+
+    std::ostringstream query;
+    query << "DELETE FROM peers WHERE peer_id='" << peer_id << "' AND info_hash='" << info_hash << "'";
+    bool ok = mysql_query(conn->get_mysql(), query.str().c_str()) == 0;
+    if (ok) {
+        refresh_torrent_stats(info_hash);
+    }
+    connection_pool_->return_connection(conn);
+    return ok;
+}
+
+bool DBManager::refresh_torrent_stats(const std::string& info_hash) {
+    auto conn = connection_pool_->get_connection();
+    if (!conn) return false;
+
+    std::ostringstream query;
+    query << "UPDATE torrents SET "
+          << "complete = (SELECT COUNT(*) FROM peers WHERE info_hash='" << info_hash
+          << "' AND left_to_download = 0 AND last_seen > DATE_SUB(NOW(), INTERVAL 2 HOUR)), "
+          << "incomplete = (SELECT COUNT(*) FROM peers WHERE info_hash='" << info_hash
+          << "' AND left_to_download > 0 AND last_seen > DATE_SUB(NOW(), INTERVAL 2 HOUR)) "
+          << "WHERE info_hash='" << info_hash << "'";
+
+    bool ok = mysql_query(conn->get_mysql(), query.str().c_str()) == 0;
+    connection_pool_->return_connection(conn);
+    return ok;
+}
+
+int DBManager::get_torrent_count() {
     auto conn = connection_pool_->get_connection();
     if (!conn) return 0;
-
     int count = 0;
-    const char* query = "SELECT SUM(complete) FROM torrents";
-
-    if (mysql_query(conn->get_mysql(), query) == 0) {
+    if (mysql_query(conn->get_mysql(), "SELECT COUNT(*) FROM torrents") == 0) {
         MYSQL_RES* result = mysql_store_result(conn->get_mysql());
         if (result) {
             MYSQL_ROW row = mysql_fetch_row(result);
-            if (row && row[0]) {
-                count = std::stoi(row[0]);
-            }
+            if (row && row[0]) count = std::stoi(row[0]);
             mysql_free_result(result);
         }
     }
-
     connection_pool_->return_connection(conn);
     return count;
 }
 
-int DBManager::get_incomplete_count() {
+int DBManager::get_peer_count(int active_within_seconds) {
     auto conn = connection_pool_->get_connection();
     if (!conn) return 0;
-
     int count = 0;
-    const char* query = "SELECT SUM(incomplete) FROM torrents";
-
-    if (mysql_query(conn->get_mysql(), query) == 0) {
+    std::ostringstream query;
+    query << "SELECT COUNT(*) FROM peers WHERE last_seen > DATE_SUB(NOW(), INTERVAL "
+          << active_within_seconds << " SECOND)";
+    if (mysql_query(conn->get_mysql(), query.str().c_str()) == 0) {
         MYSQL_RES* result = mysql_store_result(conn->get_mysql());
         if (result) {
             MYSQL_ROW row = mysql_fetch_row(result);
-            if (row && row[0]) {
-                count = std::stoi(row[0]);
+            if (row && row[0]) count = std::stoi(row[0]);
+            mysql_free_result(result);
+        }
+    }
+    connection_pool_->return_connection(conn);
+    return count;
+}
+
+int DBManager::get_active_seeder_count(int active_within_seconds) {
+    auto conn = connection_pool_->get_connection();
+    if (!conn) return 0;
+    int count = 0;
+    std::ostringstream query;
+    query << "SELECT COUNT(*) FROM peers WHERE left_to_download = 0 AND last_seen > DATE_SUB(NOW(), INTERVAL "
+          << active_within_seconds << " SECOND)";
+    if (mysql_query(conn->get_mysql(), query.str().c_str()) == 0) {
+        MYSQL_RES* result = mysql_store_result(conn->get_mysql());
+        if (result) {
+            MYSQL_ROW row = mysql_fetch_row(result);
+            if (row && row[0]) count = std::stoi(row[0]);
+            mysql_free_result(result);
+        }
+    }
+    connection_pool_->return_connection(conn);
+    return count;
+}
+
+int DBManager::get_active_leecher_count(int active_within_seconds) {
+    auto conn = connection_pool_->get_connection();
+    if (!conn) return 0;
+    int count = 0;
+    std::ostringstream query;
+    query << "SELECT COUNT(*) FROM peers WHERE left_to_download > 0 AND last_seen > DATE_SUB(NOW(), INTERVAL "
+          << active_within_seconds << " SECOND)";
+    if (mysql_query(conn->get_mysql(), query.str().c_str()) == 0) {
+        MYSQL_RES* result = mysql_store_result(conn->get_mysql());
+        if (result) {
+            MYSQL_ROW row = mysql_fetch_row(result);
+            if (row && row[0]) count = std::stoi(row[0]);
+            mysql_free_result(result);
+        }
+    }
+    connection_pool_->return_connection(conn);
+    return count;
+}
+
+std::string DBManager::get_torrents_list_json(int limit) {
+    auto conn = connection_pool_->get_connection();
+    if (!conn) return "{\"torrents\":[]}";
+
+    std::ostringstream query;
+    query << "SELECT info_hash, complete, incomplete, downloaded, updated_at FROM torrents "
+          << "ORDER BY updated_at DESC LIMIT " << limit;
+
+    std::ostringstream json;
+    json << "{\"torrents\":[";
+
+    if (mysql_query(conn->get_mysql(), query.str().c_str()) == 0) {
+        MYSQL_RES* result = mysql_store_result(conn->get_mysql());
+        if (result) {
+            bool first = true;
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(result))) {
+                if (!first) json << ",";
+                first = false;
+                json << "{"
+                     << "\"info_hash\":\"" << (row[0] ? row[0] : "") << "\","
+                     << "\"complete\":" << (row[1] ? row[1] : "0") << ","
+                     << "\"incomplete\":" << (row[2] ? row[2] : "0") << ","
+                     << "\"downloaded\":" << (row[3] ? row[3] : "0")
+                     << "}";
             }
             mysql_free_result(result);
         }
     }
 
+    json << "]}";
     connection_pool_->return_connection(conn);
-    return count;
+    return json.str();
+}
+
+int DBManager::get_complete_count() {
+    return get_active_seeder_count();
+}
+
+int DBManager::get_incomplete_count() {
+    return get_active_leecher_count();
 }
 
 int DBManager::get_downloaded_count() {

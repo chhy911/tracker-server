@@ -54,6 +54,7 @@ public:
 
     void configure(const std::string& host, int port, int worker_threads, int max_connections);
     bool start(DBManager* db_manager);
+    void start_workers();
     void run();
     void stop();
 
@@ -85,8 +86,8 @@ private:
     std::atomic<long long> total_requests_{0};
 
     mutable std::mutex rps_mutex_;
-    std::chrono::steady_clock::time_point last_rps_time_{std::chrono::steady_clock::now()};
-    long long last_rps_requests_{0};
+    mutable std::chrono::steady_clock::time_point last_rps_time_{std::chrono::steady_clock::now()};
+    mutable long long last_rps_requests_{0};
 
     std::unique_ptr<boost::asio::thread_pool> task_pool_;
 

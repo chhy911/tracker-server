@@ -1,4 +1,5 @@
 #include "rest_api.hpp"
+#include "../tracker/bep_handler.hpp"
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -26,6 +27,8 @@ std::string RESTApi::handle_request(const std::string& method, const std::string
     try {
         if (endpoint == "/api/stats") {
             return get_stats();
+        } else if (endpoint == "/api/torrents") {
+            return get_torrents();
         } else if (endpoint == "/api/health") {
             return get_health();
         } else if (starts_with(endpoint, "/api/torrent/")) {
@@ -57,9 +60,17 @@ std::string RESTApi::get_stats() {
     json << "{"
          << "\"complete\":" << db_manager_->get_complete_count() << ","
          << "\"incomplete\":" << db_manager_->get_incomplete_count() << ","
-         << "\"downloaded\":" << db_manager_->get_downloaded_count()
+         << "\"downloaded\":" << db_manager_->get_downloaded_count() << ","
+         << "\"torrent_count\":" << db_manager_->get_torrent_count() << ","
+         << "\"peer_count\":" << db_manager_->get_peer_count() << ","
+         << "\"active_seeders\":" << db_manager_->get_active_seeder_count() << ","
+         << "\"active_leechers\":" << db_manager_->get_active_leecher_count()
          << "}";
     return json.str();
+}
+
+std::string RESTApi::get_torrents() {
+    return db_manager_->get_torrents_list_json();
 }
 
 std::string RESTApi::get_torrent_stats(const std::string& info_hash) {
@@ -77,7 +88,7 @@ std::string RESTApi::get_torrent_stats(const std::string& info_hash) {
 
 std::string RESTApi::get_peers_list(const std::string& info_hash, int limit) {
     // Get some peers (note: this is a simplified example)
-    std::vector<PeerInfo> peers = db_manager_->get_peers("", limit);
+    std::vector<PeerInfo> peers = db_manager_->get_peers(info_hash, "", limit);
 
     std::ostringstream json;
     json << "{\"peers\":[";

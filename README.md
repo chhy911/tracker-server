@@ -59,9 +59,12 @@ docker compose up -d --build
 
 | 服务 | 地址 |
 |------|------|
-| 仪表板 | http://localhost:3000 |
-| REST API | http://localhost:8080 |
+| 仪表板 + API（推荐，国内服务器） | http://你的IP:8888 |
+| 仪表板（直连） | http://localhost:3000 |
+| REST API（直连） | http://localhost:8080 |
 | Tracker | `0.0.0.0:6969` |
+
+> 国内云主机 **80/443 常被封堵**，生产环境请用 Nginx 反代到 **8888**（见 `scripts/setup_nginx_alt_port.py`），并在安全组放行 8888。
 
 数据库主机由环境变量 `TRACKER_DB_HOST` 注入（Compose 默认为 `mysql`）。
 

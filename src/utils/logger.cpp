@@ -2,6 +2,7 @@
 #include <iostream>
 #include <iomanip>
 #include <cstring>
+#include <algorithm>
 
 Logger::Logger() : min_level_(LOG_LEVEL_INFO) {}
 

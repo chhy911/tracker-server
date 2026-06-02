@@ -43,9 +43,17 @@ public:
     
     // Peer management
     bool update_peer(const PeerInfo& peer);
-    bool add_peer(const PeerInfo& peer, const std::string& info_hash);
     bool remove_peer(const std::string& peer_id, const std::string& info_hash);
-    std::vector<PeerInfo> get_peers(const std::string& exclude_peer_id, int limit);
+    bool refresh_torrent_stats(const std::string& info_hash);
+
+    int get_torrent_count();
+    int get_peer_count(int active_within_seconds = 3600);
+    int get_active_seeder_count(int active_within_seconds = 3600);
+    int get_active_leecher_count(int active_within_seconds = 3600);
+    std::string get_torrents_list_json(int limit = 50);
+    std::vector<PeerInfo> get_peers(const std::string& info_hash,
+                                    const std::string& exclude_peer_id,
+                                    int limit);
     
     // Torrent statistics
     bool update_torrent_stats(const std::string& info_hash, int complete, int incomplete);

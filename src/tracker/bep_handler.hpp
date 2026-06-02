@@ -7,7 +7,8 @@
 #include "../database/db_manager.hpp"
 
 struct PeerInfo {
-    std::string peer_id;
+    std::string info_hash;  // 40-char hex (20-byte SHA1)
+    std::string peer_id;    // 40-char hex
     std::string ip;
     int port;
     long long uploaded;
@@ -31,10 +32,11 @@ public:
     ~BEPHandler();
 
     // Handle incoming BEP request
-    std::string handle_request(const std::string& request, DBManager* db);
+    std::string handle_request(const std::string& request, DBManager* db,
+                               const std::string& client_ip);
 
     // Parse announce query
-    PeerInfo parse_announce_request(const std::string& query);
+    PeerInfo parse_announce_request(const std::string& query, const std::string& client_ip);
 
     // Generate bencoded response
     std::string bencode_response(const AnnounceResponse& response);
@@ -43,6 +45,8 @@ public:
     static std::map<std::string, std::string> parse_bencode_dict(const std::string& data);
 
 private:
+    static std::string bytes_to_hex(const std::string& raw);
+    static std::string sql_escape(const std::string& value);
     std::string bencode_string(const std::string& str);
     std::string bencode_integer(long long num);
     std::string bencode_list(const std::vector<PeerInfo>& peers);

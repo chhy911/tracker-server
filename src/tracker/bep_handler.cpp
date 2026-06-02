@@ -2,15 +2,45 @@
 #include "../utils/logger.hpp"
 #include <sstream>
 #include <algorithm>
+#include <iomanip>
 #include <curl/curl.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <arpa/inet.h>
+#endif
 
 BEPHandler::BEPHandler() {}
 
 BEPHandler::~BEPHandler() {}
 
-std::string BEPHandler::handle_request(const std::string& request, DBManager* db) {
+std::string BEPHandler::bytes_to_hex(const std::string& raw) {
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (unsigned char c : raw) {
+        oss << std::setw(2) << static_cast<int>(c);
+    }
+    return oss.str();
+}
+
+std::string BEPHandler::sql_escape(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (char c : value) {
+        if (c == '\'') {
+            out += "\\'";
+        } else if (c == '\\') {
+            out += "\\\\";
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+std::string BEPHandler::handle_request(const std::string& request, DBManager* db,
+                                       const std::string& client_ip) {
     try {
-        // Extract query string from HTTP request
         size_t query_pos = request.find('?');
         if (query_pos == std::string::npos) {
             return "HTTP/1.1 400 Bad Request\r\n\r\n";
@@ -19,32 +49,37 @@ std::string BEPHandler::handle_request(const std::string& request, DBManager* db
         size_t space_pos = request.find(' ', query_pos);
         std::string query_string = request.substr(query_pos + 1, space_pos - query_pos - 1);
 
-        // Parse announce request
-        PeerInfo peer = parse_announce_request(query_string);
-
-        // Update peer info in database
-        if (!db->update_peer(peer)) {
-            LOG_ERROR("Failed to update peer in database");
-            return "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+        PeerInfo peer = parse_announce_request(query_string, client_ip);
+        if (peer.info_hash.empty() || peer.peer_id.empty()) {
+            LOG_ERROR("Invalid announce: missing info_hash or peer_id");
+            return "HTTP/1.1 400 Bad Request\r\n\r\n";
         }
 
-        // Get peer list for response
-        std::vector<PeerInfo> peers = db->get_peers(peer.peer_id, NUM_WANT);
+        if (peer.event == "stopped") {
+            db->remove_peer(peer.peer_id, peer.info_hash);
+        } else {
+            if (!db->update_peer(peer)) {
+                LOG_ERROR("Failed to update peer in database");
+                return "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+            }
+        }
 
+        std::vector<PeerInfo> peers = db->get_peers(peer.info_hash, peer.peer_id, NUM_WANT);
+
+        TorrentInfo torrent = db->get_torrent_info(peer.info_hash);
         AnnounceResponse response;
         response.interval = ANNOUNCE_INTERVAL;
         response.min_interval = MIN_ANNOUNCE_INTERVAL;
-        response.complete = db->get_complete_count();
-        response.incomplete = db->get_incomplete_count();
-        response.downloaded = db->get_downloaded_count();
+        response.complete = torrent.complete;
+        response.incomplete = torrent.incomplete;
+        response.downloaded = torrent.downloaded;
         response.peers = peers;
 
         std::string bencoded = bencode_response(response);
 
-        // Build HTTP response
         std::ostringstream http_response;
         http_response << "HTTP/1.1 200 OK\r\n";
-        http_response << "Content-Type: application/x-www-form-urlencoded\r\n";
+        http_response << "Content-Type: text/plain\r\n";
         http_response << "Content-Length: " << bencoded.length() << "\r\n";
         http_response << "Connection: close\r\n";
         http_response << "\r\n";
@@ -58,35 +93,61 @@ std::string BEPHandler::handle_request(const std::string& request, DBManager* db
     }
 }
 
-PeerInfo BEPHandler::parse_announce_request(const std::string& query) {
+PeerInfo BEPHandler::parse_announce_request(const std::string& query,
+                                            const std::string& client_ip) {
     PeerInfo peer;
-    
-    // Simple URL parameter parsing
+    peer.ip = client_ip;
+    peer.port = 0;
+
+    std::string raw_info_hash;
+    std::string raw_peer_id;
+
     std::istringstream iss(query);
     std::string pair;
 
     while (std::getline(iss, pair, '&')) {
         size_t eq_pos = pair.find('=');
-        if (eq_pos != std::string::npos) {
-            std::string key = pair.substr(0, eq_pos);
-            std::string value = pair.substr(eq_pos + 1);
-
-            // URL decode
-            CURL* curl = curl_easy_init();
-            int decode_len;
-            char* decode_value = curl_easy_unescape(curl, value.c_str(), value.length(), &decode_len);
-            value = std::string(decode_value);
-            curl_free(decode_value);
-            curl_easy_cleanup(curl);
-
-            if (key == "peer_id") peer.peer_id = value;
-            else if (key == "ip") peer.ip = value;
-            else if (key == "port") peer.port = std::stoi(value);
-            else if (key == "uploaded") peer.uploaded = std::stoll(value);
-            else if (key == "downloaded") peer.downloaded = std::stoll(value);
-            else if (key == "left") peer.left = std::stoll(value);
-            else if (key == "event") peer.event = value;
+        if (eq_pos == std::string::npos) {
+            continue;
         }
+
+        std::string key = pair.substr(0, eq_pos);
+        std::string value = pair.substr(eq_pos + 1);
+
+        CURL* curl = curl_easy_init();
+        int decode_len = 0;
+        char* decode_value = curl_easy_unescape(curl, value.c_str(),
+                                                static_cast<int>(value.length()), &decode_len);
+        if (decode_value) {
+            value = std::string(decode_value, decode_len);
+            curl_free(decode_value);
+        }
+        curl_easy_cleanup(curl);
+
+        if (key == "info_hash") {
+            raw_info_hash = value;
+        } else if (key == "peer_id") {
+            raw_peer_id = value;
+        } else if (key == "ip") {
+            peer.ip = value;
+        } else if (key == "port") {
+            peer.port = std::stoi(value);
+        } else if (key == "uploaded") {
+            peer.uploaded = std::stoll(value);
+        } else if (key == "downloaded") {
+            peer.downloaded = std::stoll(value);
+        } else if (key == "left") {
+            peer.left = std::stoll(value);
+        } else if (key == "event") {
+            peer.event = value;
+        }
+    }
+
+    if (!raw_info_hash.empty()) {
+        peer.info_hash = bytes_to_hex(raw_info_hash);
+    }
+    if (!raw_peer_id.empty()) {
+        peer.peer_id = bytes_to_hex(raw_peer_id);
     }
 
     return peer;
@@ -94,20 +155,20 @@ PeerInfo BEPHandler::parse_announce_request(const std::string& query) {
 
 std::string BEPHandler::bencode_response(const AnnounceResponse& response) {
     std::ostringstream oss;
-    
+
     oss << "d";
     oss << "8:completei" << response.complete << "e";
     oss << "10:incompletei" << response.incomplete << "e";
     oss << "8:intervali" << response.interval << "e";
     oss << "12:min intervali" << response.min_interval << "e";
     oss << "5:peers";
-    
-    // Encode peers as compact format
+
     oss << response.peers.size() * 6 << ":";
     for (const auto& peer : response.peers) {
-        // Compact format: 4 bytes IP + 2 bytes port
-        struct in_addr addr;
-        inet_aton(peer.ip.c_str(), &addr);
+        struct in_addr addr {};
+        if (inet_aton(peer.ip.c_str(), &addr) == 0) {
+            continue;
+        }
         oss << static_cast<char>((addr.s_addr >> 0) & 0xFF);
         oss << static_cast<char>((addr.s_addr >> 8) & 0xFF);
         oss << static_cast<char>((addr.s_addr >> 16) & 0xFF);
@@ -115,9 +176,9 @@ std::string BEPHandler::bencode_response(const AnnounceResponse& response) {
         oss << static_cast<char>((peer.port >> 8) & 0xFF);
         oss << static_cast<char>((peer.port >> 0) & 0xFF);
     }
-    
+
     oss << "e";
-    
+
     return oss.str();
 }
 
@@ -130,7 +191,6 @@ std::string BEPHandler::bencode_integer(long long num) {
 }
 
 std::map<std::string, std::string> BEPHandler::parse_bencode_dict(const std::string& data) {
-    std::map<std::string, std::string> result;
-    // Implementation for bencode parsing
-    return result;
+    (void)data;
+    return {};
 }

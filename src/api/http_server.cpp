@@ -35,7 +35,7 @@ HttpServer::HttpServer(boost::asio::io_context& io_context,
 bool HttpServer::start() {
     try {
         boost::asio::ip::tcp::endpoint endpoint(
-            boost::asio::ip::address::from_string(host_), port_);
+            boost::asio::ip::make_address(host_), port_);
         acceptor_ = std::make_unique<boost::asio::ip::tcp::acceptor>(io_context_, endpoint);
         running_ = true;
         do_accept();
@@ -109,6 +109,14 @@ void HttpServer::handle_request(boost::asio::ip::tcp::socket socket) {
             } else if (method != "GET") {
                 response_body = "{\"error\":\"Method not allowed\"}";
                 status = 405;
+            } else if (path == "/" || path == "/api" || path == "/api/") {
+                response_body =
+                    "{\"service\":\"tracker-api\","
+                    "\"endpoints\":[\"/api/health\",\"/api/stats\",\"/api/metrics\","
+                    "\"/api/torrent/:info_hash\",\"/api/peers/:info_hash\"],"
+                    "\"dashboard\":\"use port 8888 for web UI\"}";
+            } else if (path == "/api/torrents" && rest_api_) {
+                response_body = rest_api_->get_torrents();
             } else if (path == "/api/metrics" && tracker_) {
                 std::ostringstream json;
                 json << "{"
@@ -132,12 +140,26 @@ void HttpServer::handle_request(boost::asio::ip::tcp::socket socket) {
                 status = 503;
             }
         } else {
-            content_type = guess_content_type(path);
+            // 3000 端口仅静态资源；/api 请走 8888(Nginx) 或 8081
+            if (path.size() >= 4 && path.compare(0, 4, "/api") == 0) {
+                status = 404;
+                content_type = "application/json; charset=utf-8";
+                response_body =
+                    "{\"error\":\"API is not on this port. Use :8888/api/... or :8081/api/...\"}";
+            } else {
+            // path "/" 无扩展名时须用 text/html，否则浏览器会当下载文件
+            std::string mime_path = path;
+            if (mime_path.empty() || mime_path == "/" ||
+                mime_path.find('.') == std::string::npos) {
+                mime_path = "/index.html";
+            }
+            content_type = guess_content_type(mime_path);
             response_body = serve_static_file(path);
             if (response_body.empty()) {
                 status = 404;
-                content_type = "text/plain";
+                content_type = "text/plain; charset=utf-8";
                 response_body = "Not Found";
+            }
             }
         }
 
@@ -171,12 +193,24 @@ std::string HttpServer::build_http_response(int status,
 }
 
 std::string HttpServer::guess_content_type(const std::string& path) const {
-    if (path.size() >= 5 && path.substr(path.size() - 5) == ".html") return "text/html";
-    if (path.size() >= 4 && path.substr(path.size() - 4) == ".css") return "text/css";
-    if (path.size() >= 3 && path.substr(path.size() - 3) == ".js") return "application/javascript";
-    if (path.size() >= 4 && path.substr(path.size() - 4) == ".svg") return "image/svg+xml";
-    if (path.size() >= 4 && path.substr(path.size() - 4) == ".ico") return "image/x-icon";
-    if (path.size() >= 5 && path.substr(path.size() - 5) == ".json") return "application/json";
+    if (path.size() >= 5 && path.substr(path.size() - 5) == ".html") {
+        return "text/html; charset=utf-8";
+    }
+    if (path.size() >= 4 && path.substr(path.size() - 4) == ".css") {
+        return "text/css; charset=utf-8";
+    }
+    if (path.size() >= 3 && path.substr(path.size() - 3) == ".js") {
+        return "application/javascript; charset=utf-8";
+    }
+    if (path.size() >= 4 && path.substr(path.size() - 4) == ".svg") {
+        return "image/svg+xml";
+    }
+    if (path.size() >= 4 && path.substr(path.size() - 4) == ".ico") {
+        return "image/x-icon";
+    }
+    if (path.size() >= 5 && path.substr(path.size() - 5) == ".json") {
+        return "application/json; charset=utf-8";
+    }
     return "application/octet-stream";
 }
 

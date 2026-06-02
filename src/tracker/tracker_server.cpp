@@ -2,7 +2,8 @@
 #include "../utils/logger.hpp"
 #include <chrono>
 
-TrackerServer::TrackerServer() : port_(6969), worker_threads_(8), max_connections_(300), running_(false), task_pool_(nullptr) {}
+TrackerServer::TrackerServer()
+    : port_(6969), worker_threads_(8), max_connections_(300), task_pool_(nullptr), running_(false) {}
 
 TrackerServer::~TrackerServer() {
     stop();
@@ -25,24 +26,25 @@ bool TrackerServer::start(DBManager* db_manager) {
     try {
         db_manager_ = db_manager;
 
-        tcp::endpoint endpoint(boost::asio::ip::address::from_string(host_), port_);
+        tcp::endpoint endpoint(boost::asio::ip::make_address(host_), port_);
         acceptor_ = std::make_unique<tcp::acceptor>(io_context_, endpoint);
 
         LOG_INFO("Tracker server listening on %s:%d", host_.c_str(), port_);
         running_ = true;
-
-        for (int i = 0; i < worker_threads_; ++i) {
-            worker_threads_vec_.emplace_back([this]() {
-                io_context_.run();
-            });
-        }
-
         start_accept();
         return true;
 
     } catch (std::exception& e) {
         LOG_ERROR("Exception in start(): %s", e.what());
         return false;
+    }
+}
+
+void TrackerServer::start_workers() {
+    for (int i = 0; i < worker_threads_; ++i) {
+        worker_threads_vec_.emplace_back([this]() {
+            io_context_.run();
+        });
     }
 }
 
@@ -115,11 +117,15 @@ void TrackerSession::handle_read(const boost::system::error_code& error, size_t 
         try {
             std::string request(data_, bytes_transferred);
             
+            std::string client_ip = "0.0.0.0";
+            try {
+                client_ip = socket_.remote_endpoint().address().to_string();
+            } catch (...) {}
+
             if (server_) {
-                // Offload heavy work to the task pool
-                boost::asio::post(server_->task_pool(), [this, self = shared_from_this(), request]() {
+                boost::asio::post(server_->task_pool(), [this, self = shared_from_this(), request, client_ip]() {
                     try {
-                        std::string response = bep_handler_.handle_request(request, db_manager_);
+                        std::string response = bep_handler_.handle_request(request, db_manager_, client_ip);
 
                         if (server_) {
                             server_->record_request();
@@ -128,7 +134,8 @@ void TrackerSession::handle_read(const boost::system::error_code& error, size_t 
                         // Write the response back on the I/O context (network threads)
                         boost::asio::post(server_->io_context(), [this, self, response]() {
                             boost::asio::async_write(socket_, boost::asio::buffer(response),
-                                [this, self](const boost::system::error_code& write_error) {
+                                [this, self](const boost::system::error_code& write_error,
+                                              std::size_t /*bytes_transferred*/) {
                                     handle_write(write_error);
                                 });
                         });
