@@ -58,6 +58,8 @@ public:
     void run();
     void stop();
 
+    bool is_running() const { return running_; }
+
     boost::asio::io_context& io_context() { return io_context_; }
     boost::asio::thread_pool& task_pool() { return *task_pool_; }
 

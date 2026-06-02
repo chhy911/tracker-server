@@ -1,0 +1,16 @@
+[Unit]
+Description=BitTorrent Tracker Server
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tracker-server
+ExecStart=/opt/tracker-server/build/tracker-server /opt/tracker-server/config/tracker.conf
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

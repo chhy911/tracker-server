@@ -53,12 +53,22 @@ void TrackerServer::run() {
 }
 
 void TrackerServer::stop() {
+    if (!running_) {
+        return;
+    }
     running_ = false;
-    io_context_.stop();
+
+    if (acceptor_) {
+        boost::system::error_code ec;
+        acceptor_->close(ec);
+        acceptor_.reset();
+    }
 
     if (task_pool_) {
-        task_pool_->join();
+        task_pool_->stop();
     }
+
+    io_context_.stop();
 
     for (auto& t : worker_threads_vec_) {
         if (t.joinable()) {
@@ -66,6 +76,11 @@ void TrackerServer::stop() {
         }
     }
     worker_threads_vec_.clear();
+
+    if (task_pool_) {
+        task_pool_->join();
+        task_pool_.reset();
+    }
 }
 
 void TrackerServer::record_request() {
@@ -92,6 +107,9 @@ void TrackerServer::start_accept() {
 
 void TrackerServer::handle_accept(TrackerSession::pointer new_session,
                                    const boost::system::error_code& error) {
+    if (!running_) {
+        return;
+    }
     if (!error && active_connections_ < max_connections_) {
         active_connections_++;
         new_session->start();
@@ -122,7 +140,7 @@ void TrackerSession::handle_read(const boost::system::error_code& error, size_t 
                 client_ip = socket_.remote_endpoint().address().to_string();
             } catch (...) {}
 
-            if (server_) {
+            if (server_ && server_->is_running()) {
                 boost::asio::post(server_->task_pool(), [this, self = shared_from_this(), request, client_ip]() {
                     try {
                         std::string response = bep_handler_.handle_request(request, db_manager_, client_ip);

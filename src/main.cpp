@@ -17,12 +17,15 @@ std::unique_ptr<RESTApi> g_rest_api;
 
 void signal_handler(int signal) {
     LOG_INFO("Received signal %d, shutting down...", signal);
-    if (g_dashboard_server) g_dashboard_server->stop();
-    if (g_api_server) g_api_server->stop();
+    if (g_dashboard_server) {
+        g_dashboard_server->stop();
+    }
+    if (g_api_server) {
+        g_api_server->stop();
+    }
     if (g_server) {
         g_server->stop();
     }
-    exit(0);
 }
 
 static std::string env_or(const char* name, const std::string& fallback) {
