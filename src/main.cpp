@@ -98,7 +98,8 @@ int main(int argc, char* argv[]) {
         g_rest_api = std::make_unique<RESTApi>(g_db_manager.get());
 
         std::string api_host = config.get<std::string>("api.host", "0.0.0.0");
-        int api_port = config.get<int>("api.port", 8080);
+        int api_port = config.get<int>("api.port", 8081);
+        bool dashboard_enabled = config.get<bool>("dashboard.enabled", false);
         std::string dashboard_host = config.get<std::string>("dashboard.host", "0.0.0.0");
         int dashboard_port = config.get<int>("dashboard.port", 3000);
         std::string static_path = config.get<std::string>("dashboard.static_path", "dashboard/dist");
@@ -107,16 +108,20 @@ int main(int argc, char* argv[]) {
             g_server->io_context(), HttpServerMode::API,
             api_host, api_port, g_rest_api.get(), "", g_server);
 
-        g_dashboard_server = std::make_unique<HttpServer>(
-            g_server->io_context(), HttpServerMode::STATIC,
-            dashboard_host, dashboard_port, nullptr, static_path, nullptr);
-
         if (!g_api_server->start()) {
             LOG_ERROR("Failed to start API HTTP server");
             return 1;
         }
-        if (!g_dashboard_server->start()) {
-            LOG_WARN("Dashboard static server failed (build dashboard first)");
+
+        if (dashboard_enabled) {
+            g_dashboard_server = std::make_unique<HttpServer>(
+                g_server->io_context(), HttpServerMode::STATIC,
+                dashboard_host, dashboard_port, nullptr, static_path, nullptr);
+            if (!g_dashboard_server->start()) {
+                LOG_WARN("Dashboard static server failed (build dashboard first)");
+            }
+        } else {
+            LOG_INFO("Dashboard built-in server disabled (use Nginx :8888 for static files)");
         }
 
         g_server->start_workers();
@@ -125,7 +130,9 @@ int main(int argc, char* argv[]) {
         LOG_INFO("Worker threads: %d", worker_threads);
         LOG_INFO("Max connections: %d", max_connections);
         LOG_INFO("REST API: %s:%d", api_host.c_str(), api_port);
-        LOG_INFO("Dashboard: %s:%d", dashboard_host.c_str(), dashboard_port);
+        if (dashboard_enabled) {
+            LOG_INFO("Dashboard: %s:%d", dashboard_host.c_str(), dashboard_port);
+        }
 
         g_server->run();
 

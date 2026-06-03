@@ -12,7 +12,6 @@ set(Boost_NO_BOOST_CMAKE ON)
 
 # Boost.System is header-only since 1.69; we only need headers for Asio
 find_package(Boost 1.70 REQUIRED)
-find_package(CURL REQUIRED)
 
 find_path(MYSQL_INCLUDE_DIR mysql/mysql.h
     PATHS /usr/include /usr/local/include)
@@ -33,6 +32,7 @@ set(TRACKER_SOURCES
     src/api/http_server.cpp
     src/utils/logger.cpp
     src/utils/config.cpp
+    src/utils/sql_util.cpp
 )
 
 # Create executable
@@ -41,7 +41,6 @@ add_executable(tracker-server ${TRACKER_SOURCES})
 # Link libraries
 target_link_libraries(tracker-server
     PRIVATE
-    ${CURL_LIBRARIES}
     ${MYSQL_LIBRARY}
     pthread
 )
@@ -51,7 +50,6 @@ target_include_directories(tracker-server
     PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${Boost_INCLUDE_DIRS}
-    ${CURL_INCLUDE_DIRS}
     ${MYSQL_INCLUDE_DIR}
 )
 

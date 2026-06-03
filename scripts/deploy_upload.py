@@ -20,7 +20,7 @@ SKIP_DIRS = {
     "logs",
     "cmake-build-debug",
     "cmake-build-release",
-    "scripts",
+    "scripts/archive",
 }
 SKIP_PREFIXES = ("dashboard/node_modules", "dashboard/dist")
 
@@ -63,10 +63,10 @@ export DEBIAN_FRONTEND=noninteractive
 echo "=== Install packages ==="
 apt-get update -qq
 apt-get install -y -qq \
-  build-essential cmake git curl ca-certificates \
-  libboost-all-dev libcurl4-openssl-dev libmysqlclient-dev \
+  build-essential cmake git curl ca-certificates nginx \
+  libboost-all-dev libmysqlclient-dev \
   mysql-server mysql-client \
-  nodejs npm supervisor
+  nodejs npm
 
 systemctl enable mysql
 systemctl start mysql || true
@@ -79,10 +79,13 @@ tar -xzf /tmp/tracker-server.tar.gz -C {REMOTE_DIR}
 echo "=== Initialize database ==="
 mysql -u root < {REMOTE_DIR}/sql/init.sql 2>/dev/null || mysql < {REMOTE_DIR}/sql/init.sql
 
+echo "=== Swap ==="
+bash {REMOTE_DIR}/scripts/setup_swap.sh || true
+
 echo "=== Build dashboard ==="
 cd {REMOTE_DIR}/dashboard
 npm install --silent
-export VITE_API_URL=http://{HOST}:8080
+unset VITE_API_URL
 npm run build
 
 echo "=== Build tracker-server ==="
@@ -93,31 +96,27 @@ cmake ..
 make -j$(nproc)
 
 echo "=== Install systemd service ==="
-cat > /etc/systemd/system/tracker-server.service <<'UNIT'
-[Unit]
-Description=BitTorrent Tracker Server
-After=network.target mysql.service
-Wants=mysql.service
-
-[Service]
-Type=simple
-WorkingDirectory={REMOTE_DIR}
-ExecStart={REMOTE_DIR}/build/tracker-server {REMOTE_DIR}/config/tracker.conf
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
+cp -f {REMOTE_DIR}/config/tracker-server.service /etc/systemd/system/tracker-server.service
 systemctl daemon-reload
 systemctl enable tracker-server
-systemctl restart tracker-server
 
-sleep 3
+echo "=== Nginx ==="
+bash {REMOTE_DIR}/scripts/setup_nginx.sh
+
+cat > /etc/cron.d/tracker-health <<'CRON'
+*/2 * * * * root curl -sf -m 5 http://127.0.0.1:8888/api/health >/dev/null || (systemctl restart tracker-server; systemctl restart nginx)
+CRON
+chmod 644 /etc/cron.d/tracker-health
+
+systemctl restart tracker-server
+sleep 2
+systemctl restart nginx
+sleep 1
+
 systemctl status tracker-server --no-pager || true
-curl -sf http://127.0.0.1:8080/api/health && echo " API OK" || echo " API check failed"
-curl -sf -o /dev/null -w "Dashboard HTTP %{{http_code}}\\n" http://127.0.0.1:3000/ || true
+curl -sf http://127.0.0.1:8081/api/health && echo " API OK" || echo " API check failed"
+curl -sf -o /dev/null -w "Web 8888 %{{http_code}}\\n" http://127.0.0.1:8888/ || true
+bash {REMOTE_DIR}/scripts/smoke_test.sh || true
 
 echo "DEPLOY_DONE"
 """

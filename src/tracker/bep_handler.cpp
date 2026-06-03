@@ -3,12 +3,44 @@
 #include <sstream>
 #include <algorithm>
 #include <iomanip>
-#include <curl/curl.h>
 #ifdef _WIN32
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
 #endif
+
+namespace {
+
+int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+std::string url_decode(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '%' && i + 2 < in.size()) {
+            int hi = hex_nibble(in[i + 1]);
+            int lo = hex_nibble(in[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        if (in[i] == '+') {
+            out.push_back(' ');
+        } else {
+            out.push_back(in[i]);
+        }
+    }
+    return out;
+}
+
+}  // namespace
 
 BEPHandler::BEPHandler() {}
 
@@ -114,15 +146,7 @@ PeerInfo BEPHandler::parse_announce_request(const std::string& query,
         std::string key = pair.substr(0, eq_pos);
         std::string value = pair.substr(eq_pos + 1);
 
-        CURL* curl = curl_easy_init();
-        int decode_len = 0;
-        char* decode_value = curl_easy_unescape(curl, value.c_str(),
-                                                static_cast<int>(value.length()), &decode_len);
-        if (decode_value) {
-            value = std::string(decode_value, decode_len);
-            curl_free(decode_value);
-        }
-        curl_easy_cleanup(curl);
+        value = url_decode(value);
 
         if (key == "info_hash") {
             raw_info_hash = value;

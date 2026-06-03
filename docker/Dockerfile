@@ -4,7 +4,7 @@ WORKDIR /build
 COPY dashboard/package.json ./
 RUN npm install
 COPY dashboard/ ./
-ENV VITE_API_URL=http://localhost:8080
+# 同域 /api，由 nginx:8888 反代
 RUN npm run build
 
 # Stage 2: Build tracker server
@@ -17,7 +17,6 @@ RUN apt-get update && apt-get install -y \
     cmake \
     git \
     libboost-all-dev \
-    libcurl4-openssl-dev \
     libmysqlclient-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -38,7 +37,6 @@ ENV TRACKER_HOME=/opt/tracker-server
 RUN apt-get update && apt-get install -y \
     libboost-system1.74.0 \
     libboost-thread1.74.0 \
-    libcurl4 \
     libmysqlclient21 \
     supervisor \
     && rm -rf /var/lib/apt/lists/*
@@ -54,6 +52,6 @@ COPY docker/supervisor.conf /etc/supervisor/conf.d/tracker.conf
 RUN mkdir -p logs \
     && sed -i 's|static_path=dashboard/dist|static_path=/opt/tracker-server/dashboard/dist|' config/tracker.conf
 
-EXPOSE 6969 8080 3000
+EXPOSE 6969 8081
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

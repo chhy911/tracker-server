@@ -2,13 +2,15 @@
 
 感谢参与 [tracker-server](https://github.com/chhy911/tracker-server) 的开发！
 
+生产部署见 [DEPLOY.md](DEPLOY.md)，安全说明见 [SECURITY.md](SECURITY.md)。
+
 ## 开发环境
 
 1. 克隆仓库并安装 C++ 依赖（Ubuntu / Debian）：
 
    ```bash
    sudo apt install build-essential cmake libboost-all-dev \
-     libcurl4-openssl-dev libmysqlclient-dev mysql-server
+     libmysqlclient-dev mysql-server
    ```
 
 2. 初始化数据库：`mysql -u root -p < sql/init.sql`

@@ -9,165 +9,119 @@
 - **异步网络**：Boost.Asio，可配置 worker 线程与最大连接数
 - **BEP Announce**：标准 HTTP announce 协议处理
 - **MySQL 持久化**：种子与 peer 信息、连接池
-- **REST API**（8080）：统计、健康检查、peer 查询
-- **Web 仪表板**（3000）：实时连接数、QPS、做种/下载统计
-- **Docker 一键部署**：MySQL + Tracker 编排
+- **REST API**（默认 **8081**）：统计、健康检查、peer 查询
+- **Web 仪表板**：生产由 **Nginx 8888** 托管静态文件；开发可用 Vite
+- **Docker 编排**：MySQL + Tracker + Nginx(8888)
 
 ## 项目结构
 
 ```
 tracker-server/
 ├── src/
-│   ├── main.cpp
-│   ├── tracker/          # Tracker 核心与 BEP
-│   ├── database/         # MySQL 与连接池
-│   ├── api/              # REST + HTTP 服务
-│   └── utils/            # 配置与日志
-├── dashboard/            # React (Vite) 仪表板
-├── sql/init.sql
+├── dashboard/
 ├── config/tracker.conf
 ├── docker/
-│   ├── Dockerfile
-│   ├── docker-compose.yml
-│   └── supervisor.conf
-├── CMakeLists.txt
-└── scripts/init.sh
+├── scripts/          # 部署与运维（见 DEPLOY.md）
+├── DEPLOY.md
+└── SECURITY.md
 ```
 
 ## 系统要求
 
 - Linux（推荐 Ubuntu 22.04+）或 Docker
 - C++17、CMake 3.15+
-- Boost、libcurl、MySQL client
-- Node.js 18+（仅构建 dashboard）
+- Boost、MySQL client（**无需 libcurl**）
+- Node.js 18+（构建 dashboard）
 
 ## 快速开始
 
-### Docker（推荐）
+### Docker
 
 ```bash
-git clone https://github.com/chhy911/tracker-server.git
-cd tracker-server/docker
-
-# 可选：复制环境变量
-cp ../.env.example ../.env
-
+cd docker
+cp ../.env.example ../.env   # 可选
 docker compose up -d --build
 ```
 
-访问：
-
 | 服务 | 地址 |
 |------|------|
-| 仪表板 + API（推荐，国内服务器） | http://你的IP:8888 |
-| 仪表板（直连） | http://localhost:3000 |
-| REST API（直连） | http://localhost:8080 |
+| 仪表板 + API（推荐） | http://localhost:8888 |
+| REST API（容器内/调试） | http://localhost:8081 |
 | Tracker | `0.0.0.0:6969` |
 
-> 国内云主机 **80/443 常被封堵**，生产环境请用 Nginx 反代到 **8888**（见 `scripts/setup_nginx_alt_port.py`），并在安全组放行 8888。
-
-数据库主机由环境变量 `TRACKER_DB_HOST` 注入（Compose 默认为 `mysql`）。
+> 国内 ECS：**80/443 常被封**，生产用 Nginx **8888**（见 [DEPLOY.md](DEPLOY.md)）。
 
 ### 本地构建
 
 ```bash
-# 依赖 (Ubuntu)
-sudo apt update
 sudo apt install -y build-essential cmake libboost-all-dev \
-  libcurl4-openssl-dev libmysqlclient-dev mysql-server
+  libmysqlclient-dev mysql-server
 
-# 数据库
 mysql -u root -p < sql/init.sql
 
-# 前端
 cd dashboard && npm install && npm run build && cd ..
 
-# 后端
-mkdir -p build && cd build
-cmake ..
-make -j$(nproc)
-cd ..
+mkdir -p build && cd build && cmake .. && make -j$(nproc) && cd ..
 
 mkdir -p logs
 ./build/tracker-server config/tracker.conf
 ```
 
-开发时前端热更新：
+开发前端（Vite 代理 API 到 8081）：
 
 ```bash
 cd dashboard && npm run dev
 ```
 
-`vite` 会将 `/api` 代理到 `http://localhost:8080`。
+`vite.config.js` 默认代理到 `http://localhost:8081`。
+
+### 生产部署（ECS）
+
+```bash
+export DEPLOY_PASSWORD='...'
+python scripts/deploy_upload.py
+```
+
+详见 [DEPLOY.md](DEPLOY.md)、[SECURITY.md](SECURITY.md)。
 
 ## 配置
 
-`config/tracker.conf` 主要段落：
+`config/tracker.conf` 要点：
 
 ```ini
 [server]
-host=0.0.0.0
-port=6969
-worker_threads=8
-max_connections=300
+worker_threads=4
+max_connections=200
 
 [database]
-host=localhost
-port=3306
-user=tracker
-password=tracker_password
-database=tracker_db
-pool_size=50
+pool_size=20
 
 [api]
-host=0.0.0.0
-port=8080
+port=8081
 
 [dashboard]
-host=0.0.0.0
-port=3000
-static_path=dashboard/dist
+enabled=false
 ```
 
-环境变量覆盖数据库连接（Docker 部署时使用）：
-
-- `TRACKER_DB_HOST`
-- `TRACKER_DB_PORT`
-- `TRACKER_DB_USER`
-- `TRACKER_DB_PASSWORD`
-- `TRACKER_DB_NAME`
+环境变量可覆盖数据库：`TRACKER_DB_HOST`、`TRACKER_DB_PORT`、`TRACKER_DB_USER`、`TRACKER_DB_PASSWORD`、`TRACKER_DB_NAME`。
 
 ## API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/health` | 健康检查 |
-| GET | `/api/stats` | 全局做种/下载统计 |
-| GET | `/api/metrics` | 活跃连接、总请求、QPS |
-| GET | `/api/torrent/:info_hash` | 单个种子统计 |
-| GET | `/api/peers/:info_hash?limit=50` | Peer 列表 |
+| GET | `/api/stats` | 全局统计 |
+| GET | `/api/metrics` | 连接数、QPS |
+| GET | `/api/torrents` | 种子列表 |
+| GET | `/api/torrent/:info_hash` | 单种统计（40 位 hex） |
+| GET | `/api/peers/:info_hash` | Peer 列表 |
 
-Tracker announce（6969）：
+Tracker：`GET http://host:6969/announce?...`
 
-```http
-GET /announce?info_hash=...&peer_id=...&port=...&uploaded=...&downloaded=...&left=...
-```
+## 贡献
 
-## 推送到 GitHub
-
-```bash
-git checkout -b feature/my-change
-git add .
-git commit -m "描述你的改动"
-git push -u origin feature/my-change
-```
-
-在 GitHub 上创建 Pull Request；CI 会自动编译 C++ 与构建 dashboard。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。CI 编译 C++ 与 dashboard。
 
 ## 许可证
 
 MIT
-
-## 贡献
-
-欢迎 Issue 与 Pull Request。

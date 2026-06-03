@@ -2,6 +2,7 @@
 #include "../tracker/tracker_server.hpp"
 #include "../utils/logger.hpp"
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <algorithm>
 
@@ -63,7 +64,14 @@ void HttpServer::do_accept() {
     acceptor_->async_accept(
         [this](const boost::system::error_code& error, boost::asio::ip::tcp::socket socket) {
             if (!error) {
-                handle_request(std::move(socket));
+                if (tracker_) {
+                    boost::asio::post(tracker_->task_pool(),
+                        [this, sock = std::make_shared<boost::asio::ip::tcp::socket>(std::move(socket))]() {
+                            handle_request(std::move(*sock));
+                        });
+                } else {
+                    handle_request(std::move(socket));
+                }
             } else if (running_) {
                 LOG_ERROR("HTTP accept error: %s", error.message().c_str());
             }

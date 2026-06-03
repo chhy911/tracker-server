@@ -7,8 +7,9 @@ Wants=mysql.service
 Type=simple
 WorkingDirectory=/opt/tracker-server
 ExecStart=/opt/tracker-server/build/tracker-server /opt/tracker-server/config/tracker.conf
-Restart=on-failure
+Restart=always
 RestartSec=5
+LimitNOFILE=65535
 TimeoutStopSec=15
 KillMode=mixed
 

@@ -77,7 +77,7 @@ private:
     std::string database_;
     int pool_size_;
 
-    static const int DEFAULT_POOL_SIZE = 50;
+    static const int DEFAULT_POOL_SIZE = 20;
 };
 
 #endif // DB_MANAGER_HPP

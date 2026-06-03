@@ -1,6 +1,8 @@
 #include "db_manager.hpp"
 #include "../tracker/bep_handler.hpp"
 #include "../utils/logger.hpp"
+#include "../utils/sql_util.hpp"
+#include <algorithm>
 #include <sstream>
 
 DBManager::DBManager()
@@ -110,7 +112,9 @@ bool DBManager::create_tables() {
 }
 
 bool DBManager::update_peer(const PeerInfo& peer) {
-    if (peer.info_hash.empty() || peer.peer_id.empty() || peer.ip.empty() || peer.port <= 0) {
+    if (!sql_util::is_valid_info_hash(peer.info_hash) ||
+        !sql_util::is_valid_peer_id(peer.peer_id) ||
+        peer.ip.empty() || peer.port <= 0) {
         LOG_ERROR("Invalid peer data for update");
         return false;
     }
@@ -118,19 +122,11 @@ bool DBManager::update_peer(const PeerInfo& peer) {
     auto conn = connection_pool_->get_connection();
     if (!conn) return false;
 
-    auto esc = [](const std::string& s) {
-        std::string out;
-        for (char c : s) {
-            if (c == '\'') out += "\\'";
-            else if (c == '\\') out += "\\\\";
-            else out += c;
-        }
-        return out;
-    };
+    const std::string hash_esc = sql_util::escape(peer.info_hash);
 
     try {
         std::ostringstream torrent_sql;
-        torrent_sql << "INSERT INTO torrents (info_hash) VALUES ('" << peer.info_hash << "') "
+        torrent_sql << "INSERT INTO torrents (info_hash) VALUES ('" << hash_esc << "') "
                     << "ON DUPLICATE KEY UPDATE updated_at=NOW()";
         if (mysql_query(conn->get_mysql(), torrent_sql.str().c_str()) != 0) {
             LOG_ERROR("Failed to upsert torrent: %s", mysql_error(conn->get_mysql()));
@@ -139,7 +135,7 @@ bool DBManager::update_peer(const PeerInfo& peer) {
         }
 
         std::ostringstream id_sql;
-        id_sql << "SELECT id FROM torrents WHERE info_hash='" << peer.info_hash << "' LIMIT 1";
+        id_sql << "SELECT id FROM torrents WHERE info_hash='" << hash_esc << "' LIMIT 1";
         if (mysql_query(conn->get_mysql(), id_sql.str().c_str()) != 0) {
             LOG_ERROR("Failed to lookup torrent: %s", mysql_error(conn->get_mysql()));
             connection_pool_->return_connection(conn);
@@ -161,14 +157,17 @@ bool DBManager::update_peer(const PeerInfo& peer) {
         mysql_free_result(id_res);
 
         std::ostringstream peer_sql;
+        const std::string peer_esc = sql_util::escape(peer.peer_id);
+        const std::string ip_esc = sql_util::escape(peer.ip);
+        const std::string event_esc = sql_util::escape(peer.event);
         peer_sql << "INSERT INTO peers (peer_id, torrent_id, info_hash, ip, port, uploaded, downloaded, "
                  << "left_to_download, event) VALUES ('"
-                 << esc(peer.peer_id) << "', " << torrent_id << ", '" << peer.info_hash << "', '"
-                 << esc(peer.ip) << "', " << peer.port << ", " << peer.uploaded << ", "
-                 << peer.downloaded << ", " << peer.left << ", '" << esc(peer.event) << "') "
-                 << "ON DUPLICATE KEY UPDATE ip='" << esc(peer.ip) << "', port=" << peer.port
+                 << peer_esc << "', " << torrent_id << ", '" << hash_esc << "', '"
+                 << ip_esc << "', " << peer.port << ", " << peer.uploaded << ", "
+                 << peer.downloaded << ", " << peer.left << ", '" << event_esc << "') "
+                 << "ON DUPLICATE KEY UPDATE ip='" << ip_esc << "', port=" << peer.port
                  << ", uploaded=" << peer.uploaded << ", downloaded=" << peer.downloaded
-                 << ", left_to_download=" << peer.left << ", event='" << esc(peer.event)
+                 << ", left_to_download=" << peer.left << ", event='" << event_esc
                  << "', last_seen=NOW()";
 
         if (mysql_query(conn->get_mysql(), peer_sql.str().c_str()) != 0) {
@@ -192,14 +191,20 @@ std::vector<PeerInfo> DBManager::get_peers(const std::string& info_hash,
                                            const std::string& exclude_peer_id,
                                            int limit) {
     std::vector<PeerInfo> peers;
+    if (!sql_util::is_valid_info_hash(info_hash)) {
+        return peers;
+    }
     auto conn = connection_pool_->get_connection();
     if (!conn) return peers;
 
+    const std::string hash_esc = sql_util::escape(info_hash);
+    const std::string exclude_esc = sql_util::escape(exclude_peer_id);
+
     try {
         std::ostringstream query;
-        query << "SELECT peer_id, ip, port FROM peers WHERE info_hash='" << info_hash
-              << "' AND peer_id != '" << exclude_peer_id
-              << "' ORDER BY last_seen DESC LIMIT " << limit;
+        query << "SELECT peer_id, ip, port FROM peers WHERE info_hash='" << hash_esc
+              << "' AND peer_id != '" << exclude_esc
+              << "' ORDER BY last_seen DESC LIMIT " << std::max(1, std::min(limit, 500));
 
         if (mysql_query(conn->get_mysql(), query.str().c_str()) != 0) {
             LOG_ERROR("Failed to get peers: %s", mysql_error(conn->get_mysql()));
@@ -234,11 +239,15 @@ std::vector<PeerInfo> DBManager::get_peers(const std::string& info_hash,
 }
 
 bool DBManager::remove_peer(const std::string& peer_id, const std::string& info_hash) {
+    if (!sql_util::is_valid_info_hash(info_hash) || !sql_util::is_valid_peer_id(peer_id)) {
+        return false;
+    }
     auto conn = connection_pool_->get_connection();
     if (!conn) return false;
 
     std::ostringstream query;
-    query << "DELETE FROM peers WHERE peer_id='" << peer_id << "' AND info_hash='" << info_hash << "'";
+    query << "DELETE FROM peers WHERE peer_id='" << sql_util::escape(peer_id)
+          << "' AND info_hash='" << sql_util::escape(info_hash) << "'";
     bool ok = mysql_query(conn->get_mysql(), query.str().c_str()) == 0;
     if (ok) {
         refresh_torrent_stats(info_hash);
@@ -248,16 +257,20 @@ bool DBManager::remove_peer(const std::string& peer_id, const std::string& info_
 }
 
 bool DBManager::refresh_torrent_stats(const std::string& info_hash) {
+    if (!sql_util::is_valid_info_hash(info_hash)) {
+        return false;
+    }
     auto conn = connection_pool_->get_connection();
     if (!conn) return false;
 
+    const std::string hash_esc = sql_util::escape(info_hash);
     std::ostringstream query;
     query << "UPDATE torrents SET "
-          << "complete = (SELECT COUNT(*) FROM peers WHERE info_hash='" << info_hash
+          << "complete = (SELECT COUNT(*) FROM peers WHERE info_hash='" << hash_esc
           << "' AND left_to_download = 0 AND last_seen > DATE_SUB(NOW(), INTERVAL 2 HOUR)), "
-          << "incomplete = (SELECT COUNT(*) FROM peers WHERE info_hash='" << info_hash
+          << "incomplete = (SELECT COUNT(*) FROM peers WHERE info_hash='" << hash_esc
           << "' AND left_to_download > 0 AND last_seen > DATE_SUB(NOW(), INTERVAL 2 HOUR)) "
-          << "WHERE info_hash='" << info_hash << "'";
+          << "WHERE info_hash='" << hash_esc << "'";
 
     bool ok = mysql_query(conn->get_mysql(), query.str().c_str()) == 0;
     connection_pool_->return_connection(conn);
@@ -404,11 +417,15 @@ int DBManager::get_downloaded_count() {
 
 TorrentInfo DBManager::get_torrent_info(const std::string& info_hash) {
     TorrentInfo info = {info_hash, 0, 0, 0};
+    if (!sql_util::is_valid_info_hash(info_hash)) {
+        return info;
+    }
     auto conn = connection_pool_->get_connection();
     if (!conn) return info;
 
     std::ostringstream query;
-    query << "SELECT complete, incomplete, downloaded FROM torrents WHERE info_hash = '" << info_hash << "'";
+    query << "SELECT complete, incomplete, downloaded FROM torrents WHERE info_hash = '"
+          << sql_util::escape(info_hash) << "'";
 
     if (mysql_query(conn->get_mysql(), query.str().c_str()) == 0) {
         MYSQL_RES* result = mysql_store_result(conn->get_mysql());

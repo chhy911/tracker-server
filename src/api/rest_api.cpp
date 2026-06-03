@@ -1,5 +1,6 @@
 #include "rest_api.hpp"
 #include "../tracker/bep_handler.hpp"
+#include "../utils/sql_util.hpp"
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -33,9 +34,15 @@ std::string RESTApi::handle_request(const std::string& method, const std::string
             return get_health();
         } else if (starts_with(endpoint, "/api/torrent/")) {
             std::string info_hash = endpoint.substr(13); // "/api/torrent/" is 13 chars
+            if (!sql_util::is_valid_info_hash(info_hash)) {
+                return "{\"error\":\"Invalid info_hash\"}";
+            }
             return get_torrent_stats(info_hash);
         } else if (starts_with(endpoint, "/api/peers/")) {
             std::string info_hash = endpoint.substr(11); // "/api/peers/" is 11 chars
+            if (!sql_util::is_valid_info_hash(info_hash)) {
+                return "{\"error\":\"Invalid info_hash\"}";
+            }
             auto params = parse_query_string(query);
             int limit = 50;
             if (params.find("limit") != params.end()) {
