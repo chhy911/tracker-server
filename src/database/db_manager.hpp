@@ -9,21 +9,23 @@
 
 struct TorrentInfo {
     std::string info_hash;
-    int complete;
-    int incomplete;
-    int downloaded;
+    int complete{0};
+    int incomplete{0};
+    int downloaded{0};
+    std::string name;
+    std::string updated_at;
 };
 
 struct PeerRecord {
     std::string peer_id;
     std::string info_hash;
     std::string ip;
-    int port;
-    long long uploaded;
-    long long downloaded;
-    long long left;
+    int port{0};
+    long long uploaded{0};
+    long long downloaded{0};
+    long long left{0};
     std::string event;
-    long long timestamp;
+    long long timestamp{0};
 };
 
 // Forward declaration
@@ -40,30 +42,41 @@ public:
 
     bool connect();
     void disconnect();
-    
+
+    /** Returns true if a DB connection can be acquired and pinged */
+    bool is_alive();
+
     // Peer management
     bool update_peer(const PeerInfo& peer);
     bool remove_peer(const std::string& peer_id, const std::string& info_hash);
     bool refresh_torrent_stats(const std::string& info_hash);
 
+    /** Atomically increment torrents.downloaded (called on event=completed) */
+    bool increment_downloaded(const std::string& info_hash);
+
     int get_torrent_count();
     int get_peer_count(int active_within_seconds = 3600);
     int get_active_seeder_count(int active_within_seconds = 3600);
     int get_active_leecher_count(int active_within_seconds = 3600);
-    std::string get_torrents_list_json(int limit = 50);
+
+    /**
+     * @param limit  max rows per page
+     * @param offset row offset for pagination
+     */
+    std::string get_torrents_list_json(int limit = 50, int offset = 0);
     std::vector<PeerInfo> get_peers(const std::string& info_hash,
                                     const std::string& exclude_peer_id,
                                     int limit);
-    
+
     // Torrent statistics
     bool update_torrent_stats(const std::string& info_hash, int complete, int incomplete);
     TorrentInfo get_torrent_info(const std::string& info_hash);
-    
+
     // Statistics
     int get_complete_count();
     int get_incomplete_count();
     int get_downloaded_count();
-    
+
     // Database maintenance
     bool cleanup_old_peers(int max_age_seconds = 3600);
     bool create_tables();

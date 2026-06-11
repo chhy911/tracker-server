@@ -54,6 +54,8 @@ public:
 
     void configure(const std::string& host, int port, int worker_threads, int max_connections);
     bool start(DBManager* db_manager);
+    void configure_bep(int announce_interval, int min_announce_interval,
+                       int num_want, int max_peer_age, int cleanup_interval);
     void start_workers();
     void run();
     void stop();
@@ -69,6 +71,12 @@ public:
     int get_active_connections() const;
     long long get_total_requests() const;
     double get_requests_per_second() const;
+
+    int bep_announce_interval() const     { return bep_config_announce_interval_; }
+    int bep_min_announce_interval() const { return bep_config_min_announce_interval_; }
+    int bep_num_want() const              { return bep_config_num_want_; }
+    int bep_max_peer_age() const          { return bep_config_max_peer_age_; }
+    int bep_cleanup_interval() const      { return bep_config_cleanup_interval_; }
 
 private:
     void start_accept();
@@ -94,6 +102,13 @@ private:
     std::unique_ptr<boost::asio::thread_pool> task_pool_;
 
     bool running_;
+
+    // BEP handler configuration (from [tracker] config section)
+    int bep_config_announce_interval_{1800};
+    int bep_config_min_announce_interval_{600};
+    int bep_config_num_want_{50};
+    int bep_config_max_peer_age_{3600};
+    int bep_config_cleanup_interval_{3600};
 };
 
 #endif // TRACKER_SERVER_HPP

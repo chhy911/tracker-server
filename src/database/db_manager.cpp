@@ -53,6 +53,14 @@ void DBManager::disconnect() {
     }
 }
 
+bool DBManager::is_alive() {
+    auto conn = connection_pool_->get_connection();
+    if (!conn) return false;
+    bool ok = (mysql_ping(conn->get_mysql()) == 0);
+    connection_pool_->return_connection(conn);
+    return ok;
+}
+
 bool DBManager::create_tables() {
     auto conn = connection_pool_->get_connection();
     if (!conn) {
@@ -77,7 +85,7 @@ bool DBManager::create_tables() {
             peer_id VARCHAR(40) NOT NULL,
             torrent_id INT NOT NULL,
             info_hash VARCHAR(40) NOT NULL,
-            ip VARCHAR(15) NOT NULL,
+            ip VARCHAR(45) NOT NULL,
             port INT NOT NULL,
             uploaded BIGINT DEFAULT 0,
             downloaded BIGINT DEFAULT 0,
@@ -85,7 +93,7 @@ bool DBManager::create_tables() {
             event VARCHAR(20),
             last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             FOREIGN KEY (torrent_id) REFERENCES torrents(id) ON DELETE CASCADE,
-            INDEX idx_peer_id (peer_id),
+            UNIQUE KEY unique_peer (torrent_id, peer_id),
             INDEX idx_hash (info_hash),
             INDEX idx_last_seen (last_seen)
         ))",
@@ -350,16 +358,33 @@ int DBManager::get_active_leecher_count(int active_within_seconds) {
     return count;
 }
 
-std::string DBManager::get_torrents_list_json(int limit) {
+std::string DBManager::get_torrents_list_json(int limit, int offset) {
     auto conn = connection_pool_->get_connection();
-    if (!conn) return "{\"torrents\":[]}";
+    if (!conn) return "{\"torrents\":[],\"total\":0}";
+
+    // Count total
+    int total = 0;
+    if (mysql_query(conn->get_mysql(), "SELECT COUNT(*) FROM torrents") == 0) {
+        MYSQL_RES* cr = mysql_store_result(conn->get_mysql());
+        if (cr) {
+            MYSQL_ROW row = mysql_fetch_row(cr);
+            if (row && row[0]) total = std::stoi(row[0]);
+            mysql_free_result(cr);
+        }
+    }
+
+    int safe_limit  = std::max(1, std::min(limit, 200));
+    int safe_offset = std::max(0, offset);
 
     std::ostringstream query;
-    query << "SELECT info_hash, complete, incomplete, downloaded, updated_at FROM torrents "
-          << "ORDER BY updated_at DESC LIMIT " << limit;
+    query << "SELECT info_hash, COALESCE(name,'') AS name, complete, incomplete, downloaded, "
+          << "DATE_FORMAT(updated_at,'%Y-%m-%d %H:%i:%s') AS updated_at "
+          << "FROM torrents ORDER BY updated_at DESC "
+          << "LIMIT " << safe_limit << " OFFSET " << safe_offset;
 
     std::ostringstream json;
-    json << "{\"torrents\":[";
+    json << "{\"total\":" << total << ",\"limit\":" << safe_limit
+         << ",\"offset\":" << safe_offset << ",\"torrents\":[";
 
     if (mysql_query(conn->get_mysql(), query.str().c_str()) == 0) {
         MYSQL_RES* result = mysql_store_result(conn->get_mysql());
@@ -369,11 +394,21 @@ std::string DBManager::get_torrents_list_json(int limit) {
             while ((row = mysql_fetch_row(result))) {
                 if (!first) json << ",";
                 first = false;
+                // simple JSON-escape name
+                std::string name_str = row[1] ? row[1] : "";
+                std::string name_esc;
+                for (char c : name_str) {
+                    if (c == '"') name_esc += "\\\"";
+                    else if (c == '\\') name_esc += "\\\\";
+                    else name_esc += c;
+                }
                 json << "{"
-                     << "\"info_hash\":\"" << (row[0] ? row[0] : "") << "\","
-                     << "\"complete\":" << (row[1] ? row[1] : "0") << ","
-                     << "\"incomplete\":" << (row[2] ? row[2] : "0") << ","
-                     << "\"downloaded\":" << (row[3] ? row[3] : "0")
+                     << "\"info_hash\":\""  << (row[0] ? row[0] : "") << "\","
+                     << "\"name\":\""       << name_esc << "\","
+                     << "\"complete\":"     << (row[2] ? row[2] : "0") << ","
+                     << "\"incomplete\":"   << (row[3] ? row[3] : "0") << ","
+                     << "\"downloaded\":"   << (row[4] ? row[4] : "0") << ","
+                     << "\"updated_at\":\"" << (row[5] ? row[5] : "") << "\""
                      << "}";
             }
             mysql_free_result(result);
@@ -416,7 +451,8 @@ int DBManager::get_downloaded_count() {
 }
 
 TorrentInfo DBManager::get_torrent_info(const std::string& info_hash) {
-    TorrentInfo info = {info_hash, 0, 0, 0};
+    TorrentInfo info;
+    info.info_hash = info_hash;
     if (!sql_util::is_valid_info_hash(info_hash)) {
         return info;
     }
@@ -424,7 +460,9 @@ TorrentInfo DBManager::get_torrent_info(const std::string& info_hash) {
     if (!conn) return info;
 
     std::ostringstream query;
-    query << "SELECT complete, incomplete, downloaded FROM torrents WHERE info_hash = '"
+    query << "SELECT complete, incomplete, downloaded, COALESCE(name,''), "
+          << "DATE_FORMAT(updated_at,'%Y-%m-%d %H:%i:%s') "
+          << "FROM torrents WHERE info_hash = '"
           << sql_util::escape(info_hash) << "'";
 
     if (mysql_query(conn->get_mysql(), query.str().c_str()) == 0) {
@@ -432,9 +470,11 @@ TorrentInfo DBManager::get_torrent_info(const std::string& info_hash) {
         if (result) {
             MYSQL_ROW row = mysql_fetch_row(result);
             if (row) {
-                info.complete = row[0] ? std::stoi(row[0]) : 0;
+                info.complete   = row[0] ? std::stoi(row[0]) : 0;
                 info.incomplete = row[1] ? std::stoi(row[1]) : 0;
                 info.downloaded = row[2] ? std::stoi(row[2]) : 0;
+                info.name       = row[3] ? row[3] : "";
+                info.updated_at = row[4] ? row[4] : "";
             }
             mysql_free_result(result);
         }
@@ -449,9 +489,43 @@ bool DBManager::cleanup_old_peers(int max_age_seconds) {
     if (!conn) return false;
 
     std::ostringstream query;
-    query << "DELETE FROM peers WHERE last_seen < DATE_SUB(NOW(), INTERVAL " << max_age_seconds << " SECOND)";
+    query << "DELETE FROM peers WHERE last_seen < DATE_SUB(NOW(), INTERVAL "
+          << std::max(60, max_age_seconds) << " SECOND)";
 
-    bool result = mysql_query(conn->get_mysql(), query.str().c_str()) == 0;
+    bool ok = mysql_query(conn->get_mysql(), query.str().c_str()) == 0;
+    if (ok) {
+        unsigned long long affected = mysql_affected_rows(conn->get_mysql());
+        if (affected > 0) {
+            LOG_INFO("Cleaned up %llu stale peers", (unsigned long long)affected);
+        }
+    }
     connection_pool_->return_connection(conn);
-    return result;
+    return ok;
+}
+
+bool DBManager::increment_downloaded(const std::string& info_hash) {
+    if (!sql_util::is_valid_info_hash(info_hash)) return false;
+    auto conn = connection_pool_->get_connection();
+    if (!conn) return false;
+
+    std::ostringstream query;
+    query << "UPDATE torrents SET downloaded = downloaded + 1 WHERE info_hash = '"
+          << sql_util::escape(info_hash) << "'";
+    bool ok = mysql_query(conn->get_mysql(), query.str().c_str()) == 0;
+    connection_pool_->return_connection(conn);
+    return ok;
+}
+
+bool DBManager::update_torrent_stats(const std::string& info_hash, int complete, int incomplete) {
+    if (!sql_util::is_valid_info_hash(info_hash)) return false;
+    auto conn = connection_pool_->get_connection();
+    if (!conn) return false;
+
+    std::ostringstream query;
+    query << "UPDATE torrents SET complete=" << complete
+          << ", incomplete=" << incomplete
+          << " WHERE info_hash='" << sql_util::escape(info_hash) << "'";
+    bool ok = mysql_query(conn->get_mysql(), query.str().c_str()) == 0;
+    connection_pool_->return_connection(conn);
+    return ok;
 }

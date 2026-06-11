@@ -17,6 +17,15 @@ void TrackerServer::configure(const std::string& host, int port, int worker_thre
     task_pool_ = std::make_unique<boost::asio::thread_pool>(worker_threads);
 }
 
+void TrackerServer::configure_bep(int announce_interval, int min_announce_interval,
+                                   int num_want, int max_peer_age, int cleanup_interval) {
+    bep_config_announce_interval_     = announce_interval;
+    bep_config_min_announce_interval_ = min_announce_interval;
+    bep_config_num_want_              = num_want;
+    bep_config_max_peer_age_          = max_peer_age;
+    bep_config_cleanup_interval_      = cleanup_interval;
+}
+
 bool TrackerServer::start(DBManager* db_manager) {
     if (!db_manager) {
         LOG_ERROR("Database manager is required");
@@ -143,6 +152,13 @@ void TrackerSession::handle_read(const boost::system::error_code& error, size_t 
             if (server_ && server_->is_running()) {
                 boost::asio::post(server_->task_pool(), [this, self = shared_from_this(), request, client_ip]() {
                     try {
+                        // Apply server-level BEP config each time (lightweight value copy)
+                        bep_handler_.configure(
+                            server_->bep_announce_interval(),
+                            server_->bep_min_announce_interval(),
+                            server_->bep_num_want(),
+                            server_->bep_max_peer_age(),
+                            server_->bep_cleanup_interval());
                         std::string response = bep_handler_.handle_request(request, db_manager_, client_ip);
 
                         if (server_) {

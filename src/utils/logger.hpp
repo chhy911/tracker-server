@@ -22,8 +22,9 @@ public:
         return instance;
     }
 
-    void init(const std::string& log_file, const std::string& level_str);
-    
+    void init(const std::string& log_file, const std::string& level_str,
+              long max_size_mb = 100, int backup_count = 5);
+
     void log(LogLevel level, const char* format, va_list args);
     void log(LogLevel level, const char* format, ...);
 
@@ -34,19 +35,23 @@ private:
     Logger();
     ~Logger();
 
+    void rotate_if_needed();
     std::string get_level_name(LogLevel level) const;
     std::string get_timestamp() const;
     LogLevel parse_level(const std::string& level_str);
 
+    std::string   log_file_path_;
     std::ofstream log_file_;
-    std::mutex mutex_;
-    LogLevel min_level_;
+    std::mutex    mutex_;
+    LogLevel      min_level_;
+    long          max_size_bytes_{100 * 1024 * 1024};
+    int           backup_count_{5};
 };
 
-#define LOG_DEBUG(...) Logger::getInstance().log(LOG_LEVEL_DEBUG, __VA_ARGS__)
-#define LOG_INFO(...) Logger::getInstance().log(LOG_LEVEL_INFO, __VA_ARGS__)
-#define LOG_WARN(...) Logger::getInstance().log(LOG_LEVEL_WARN, __VA_ARGS__)
-#define LOG_ERROR(...) Logger::getInstance().log(LOG_LEVEL_ERROR, __VA_ARGS__)
+#define LOG_DEBUG(...)    Logger::getInstance().log(LOG_LEVEL_DEBUG,    __VA_ARGS__)
+#define LOG_INFO(...)     Logger::getInstance().log(LOG_LEVEL_INFO,     __VA_ARGS__)
+#define LOG_WARN(...)     Logger::getInstance().log(LOG_LEVEL_WARN,     __VA_ARGS__)
+#define LOG_ERROR(...)    Logger::getInstance().log(LOG_LEVEL_ERROR,    __VA_ARGS__)
 #define LOG_CRITICAL(...) Logger::getInstance().log(LOG_LEVEL_CRITICAL, __VA_ARGS__)
 
 #endif // LOGGER_HPP
